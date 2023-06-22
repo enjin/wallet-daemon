@@ -1,0 +1,6 @@
+mutation SetWalletAccount(
+  $id: Int!
+  $account: String!
+) {
+  SetWalletAccount(id: $id, account: $account)
+}

@@ -1,0 +1,7 @@
+.idea/
+target/
+alternative_store/
+.cargo/
+node_modules
+build/
+integration-tests/test/chains/

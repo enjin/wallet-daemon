@@ -1,0 +1,8 @@
+mutation UpdateTransaction(
+  $id: Int!
+  $state: TransactionState
+  $transactionHash: String
+  $signedAtBlock: Int
+) {
+  UpdateTransaction(id: $id, state: $state, transactionHash: $transactionHash, signedAtBlock: $signedAtBlock)
+}

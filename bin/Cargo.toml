@@ -1,0 +1,26 @@
+[package]
+name = "bin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wallet"
+path = "src/wallet.rs"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wallet_lib = { path = "../lib" }
+tokio = { version = "1.10", default-features = false, features = [
+    "rt",
+    "macros",
+    "rt-multi-thread",
+    "signal",
+] }
+subxt = { git = "https://github.com/leonardocustodio/subxt.git" }
+tracing-subscriber = "0.3"
+codec = { package = 'parity-scale-codec', version = "3.0.0", default-features = false, features = [
+    "derive",
+    "full",
+    "bit-vec",
+] }
+scale-info = { version = "2.0.0", features = ["bit-vec"] }

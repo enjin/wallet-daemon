@@ -1,0 +1,82 @@
+schema {
+  mutation: Mutation
+  query: Query
+}
+
+enum TransactionState {
+  PENDING
+  BROADCAST
+  ABANDONED
+  FINALIZED
+}
+
+type Transaction {
+  id: Int!
+  transactionId: String
+  state: TransactionState!
+  transactionHash: String
+  wallet: Wallet!
+  encodedData: String!
+}
+
+type Account {
+  publicKey: String
+  address: String
+}
+
+type Wallet {
+  id: Int!
+  account: Account
+  externalId: String
+  managed: Boolean!
+  network: String!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String!
+  endCursor: String!
+}
+
+type WalletEdge {
+  node: Wallet!
+  cursor: String!
+}
+
+type WalletConnection {
+  edges: [WalletEdge]!
+  pageInfo: PageInfo!
+  totalCount: Int
+}
+
+type TransactionEdge {
+  node: Transaction!
+  cursor: String!
+}
+
+type TransactionConnection {
+  edges: [TransactionEdge]!
+  pageInfo: PageInfo!
+  totalCount: Int
+}
+
+type Query {
+  GetPendingWallets(after: String, first: Int): WalletConnection
+}
+
+type Mutation {
+  MarkAndListPendingTransactions(after: String, first: Int): TransactionConnection
+
+  UpdateTransaction(
+    id: Int!
+    state: TransactionState
+    transactionHash: String
+    signedAtBlock: Int
+  ): Boolean!
+
+  SetWalletAccount(
+    id: Int!
+    account: String!
+  ): Boolean!
+}

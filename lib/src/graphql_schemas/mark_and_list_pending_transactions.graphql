@@ -1,0 +1,22 @@
+mutation MarkAndListPendingTransactions($after: String, $first: Int) {
+  MarkAndListPendingTransactions(after: $after, first: $first) {
+    edges {
+      cursor
+      node {
+        id
+        encodedData
+        wallet {
+          externalId
+          managed
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      hasPreviousPage
+      startCursor
+      endCursor
+    }
+    totalCount
+  }
+}
