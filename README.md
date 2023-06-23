@@ -96,7 +96,7 @@ efinity/wallet \
 "73723235301cb3057d43941d5f631613aa1661be0354d39e34f23d4ef527396b10d2bb7a" \
 "duty captain man fantasy angry window release hammer suspect bullet panda special" \
 example \
-apiKey
+bFwNECHZlzsQsrSudzWymXhalcViuPwKXFfnPYsm
 ```
 
 Another important thing when the seed phrase is written to the file there is something weird that can happen with `printf` so if there is an error reading the key when deploying try defining the env variable `ADD_QUOTES`(Or undefining it if it exists), if you want to know more about this read the comment in the `start.sh` script.
