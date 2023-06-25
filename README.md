@@ -78,7 +78,7 @@ The docker image is tagged `enjin/wallet-daemon`.
 
 The image start command is the script in `data/start.sh`.
 
-It requires a volume mounted in `/opt/app/config.json` with the `config.json` file (with the details corresponding to the deployment).
+It requires a volume mounted in `/opt/app/config` with the `config.json` file (with the details corresponding to the deployment).
 
 Furthemore, the `config.json` requires the `master_key` entry to be `/opt/app/storage/` (For an example look at the `config.json` in the `docker` directory).
 
@@ -88,6 +88,17 @@ You will need to generate a key locally by running the daemon with `cargo run --
 * `SEED_PHRASE`: These are the content of the key file, which are the bip-39 words used to generate the key. (In the current example: "duty captain man fantasy angry window release hammer suspect bullet panda special").
 * `KEY_PASS`: The pass of the key which when originally generated is set through the `KEY_PASS` env variable. (In the current example: `example`).
 * `PLATFORM_KEY`: The platform key is the API token used to authenticate the wallet daemon so it can request new transactions from the platform to sign.
+
+### Example:
+```
+docker run -v localDirectoryWithConfigFile:/opt/app/config \ 
+-e CONFIG_FILE="/opt/app/config/config.json" \ 
+efinity/wallet \
+"73723235301cb3057d43941d5f631613aa1661be0354d39e34f23d4ef527396b10d2bb7a" \
+"duty captain man fantasy angry window release hammer suspect bullet panda special" \
+example \
+bFwNECHZlzsQsrSudzWymXhalcViuPwKXFfnPYsm
+```
 
 Another important thing to note when the seed phrase is written to the file, there is something weird that can happen with `printf` so if there is an error reading the key when deploying try defining the env variable `ADD_QUOTES` (or undefining it if it exists), if you want to know more about this read the comment in the `start.sh` script.
 
