@@ -38,5 +38,5 @@ ENTRYPOINT ["start.sh"]
 # SEED_PHRASE = These are the content of the key file, which are the bip-39 words used to generate the key.
 # (In the current example: "duty captain man fantasy angry window release hammer suspect bullet panda special")
 # KEY_PASS = The pass of the key which when originally generated is set through the `KEY_PASS` env variable. (In the current example: `example`)
-# PLATFORM_KEY = <description to be added>
+# PLATFORM_KEY = The platform key is the API token used to authenticate the wallet daemon so it can request new transactions from the platform to sign.
 CMD ["STORE_NAME", "SEED_PHRASE", "KEY_PASS", "PLATFORM_KEY"]
