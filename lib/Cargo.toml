@@ -18,7 +18,7 @@ codec = { package = 'parity-scale-codec', version = "3.0.0", default-features = 
     "full",
     "bit-vec",
 ] }
-tokio = { version = "1.10", default-features = false, features = [
+tokio = { version = "1.28.0", default-features = false, features = [
     "rt",
     "macros",
     "rt-multi-thread",

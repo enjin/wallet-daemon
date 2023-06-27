@@ -10,7 +10,7 @@ path = "src/wallet.rs"
 
 [dependencies]
 wallet_lib = { path = "../lib" }
-tokio = { version = "1.10", default-features = false, features = [
+tokio = { version = "1.28.0", default-features = false, features = [
     "rt",
     "macros",
     "rt-multi-thread",

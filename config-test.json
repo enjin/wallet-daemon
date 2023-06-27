@@ -1,0 +1,5 @@
+{
+  "node": "ws://localhost:10010",
+  "api": "http://localhost:8000/graphql",
+  "master_key": "../store"
+}
