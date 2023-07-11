@@ -165,7 +165,7 @@ where
     };
 
     // Note on types: We need T: AppPair for `LocalKeyStore::key_pair(T)` and that's only implemented for by the *AppPair(where * is the key type)
-    // but `PairSigner::new(T)` requres `T::Signature: From<P::Signature>` and `T::Signature` in most cases is `MultiSignature` and that is only implemented for `P = *Pair`
+    // but `PairSigner::new(T)` requires `T::Signature: From<P::Signature>` and `T::Signature` in most cases is `MultiSignature` and that is only implemented for `P = *Pair`
     // (Not *AppPair) where * is the key type.
     PairSig::new(
         key_store
@@ -271,14 +271,11 @@ where
         Ss58Codec::from_ss58check(&*account_id.to_string()).unwrap();
 
     println!(
-        "Efinity address: {}",
-        converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
+        "Wallet daemon address in different formats:\nEfinity: {}\nMatrix: {}\nCanary: {}",
+        converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110)),
+        converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(12120)),
+        converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030)),
     );
-    println!(
-        "Rocfinity address: {}",
-        converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(195))
-    );
-    println!("Substrate address: {account_id}");
 
     let wallet = EfinityWallet::new(&context_provider, signer);
     let wallet_connection_pair = WalletConnectionPair {
