@@ -271,9 +271,8 @@ where
         Ss58Codec::from_ss58check(&*account_id.to_string()).unwrap();
 
     println!(
-        "Wallet daemon address in different formats:\nEfinity: {}\nMatrix: {}\nCanary: {}",
+        "Wallet daemon address in different formats:\nEnjin Matrix: {}\nCanary Matrix: {}",
         converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110)),
-        converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(12120)),
         converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030)),
     );
 
