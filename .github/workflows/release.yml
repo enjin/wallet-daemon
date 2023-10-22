@@ -1,12 +1,11 @@
-name: Release binaries
+name: Make Release
 on:
-  pull_request:
-#  release:
-#    types: [created]
+  release:
+    types: [created]
 
 jobs:
   release:
-    name: release ${{ matrix.target }}
+    name: Release ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
