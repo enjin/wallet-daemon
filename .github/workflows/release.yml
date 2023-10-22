@@ -14,13 +14,10 @@ jobs:
         include:
           - target: x86_64-pc-windows-gnu
             archive: zip
-            package: [lib, bin]
           - target: x86_64-unknown-linux-musl
             archive: tar.gz tar.xz tar.zst
-            package: [lib, bin]
           - target: x86_64-apple-darwin
             archive: zip
-            package: [lib, bin]
     steps:
       - uses: actions/checkout@master
       - name: Compile and release
@@ -29,5 +26,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           RUSTTARGET: ${{ matrix.target }}
-          SRC_DIR: ${{ matrix.package }}
+          SRC_DIR: bin
           ARCHIVE_TYPES: ${{ matrix.archive }}
