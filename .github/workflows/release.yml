@@ -1,4 +1,4 @@
-name: Make Release
+name: Build releases
 on:
   push:
   pull_request:
@@ -6,6 +6,17 @@ on:
 #    types: [created]
 
 jobs:
+  release-linux:
+    name: Release Linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build
+        run: cargo build --release
+
   release:
     name: Release ${{ matrix.target }}
     runs-on: ubuntu-latest
@@ -21,10 +32,6 @@ jobs:
           - target: x86_64-apple-darwin
             archive: zip
     steps:
-      - uses: actions/checkout@v3
-      - name: Build
-        run: cargo build --release
-
       - uses: actions/checkout@master
       - name: Compile and release
         uses: rust-build/rust-build.action@v1.4.3
