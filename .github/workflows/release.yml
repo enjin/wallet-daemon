@@ -1,5 +1,7 @@
 name: Make Release
 on:
+  push:
+  pull_request:
 #  release:
 #    types: [created]
 
