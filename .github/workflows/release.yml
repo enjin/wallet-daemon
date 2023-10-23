@@ -23,7 +23,7 @@ jobs:
           type: 'zip'
           filename: wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
           directory: target/release
-          exclusions: '.fingerprint/* build/* deps/* examples/* incremental/* .cargo-lock *.d *.rlib'
+          exclusions: '.fingerprint/* build/* deps/* examples/* incremental/*'
 
       - name: Linux Release
         uses: softprops/action-gh-release@v1
