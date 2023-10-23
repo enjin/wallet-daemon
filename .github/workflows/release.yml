@@ -1,9 +1,8 @@
 name: Build releases
 on:
-  push:
   pull_request:
-#  release:
-#    types: [created]
+  release:
+    types: [created]
 
 jobs:
   release-linux:
@@ -22,7 +21,7 @@ jobs:
         with:
           type: 'zip'
           filename: wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
-          directory: target/release/wallet
+          directory: target/release
           exclusions: '.fingerprint* build* deps* examples* incremental* .cargo-lock *.d *.rlib'
 
       - name: Linux Release
@@ -49,6 +48,10 @@ jobs:
             archive: zip
 
     steps:
+      - name: Only upload on tag
+        if: !startsWith(github.ref, 'refs/tags/')
+        run: echo 'UPLOAD_MODE=none' >> "$GITHUB_ENV"
+
       - uses: actions/checkout@master
       - name: Compile and release
         uses: rust-build/rust-build.action@v1.4.3
@@ -56,5 +59,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           RUSTTARGET: ${{ matrix.target }}
+          UPLOAD_MODE: ${{ env.UPLOAD_MODE }}
           SRC_DIR: bin
           ARCHIVE_TYPES: ${{ matrix.archive }}
