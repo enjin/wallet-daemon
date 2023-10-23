@@ -2,8 +2,8 @@ name: Build releases
 on:
   push:
   pull_request:
-  release:
-    types: [created]
+#  release:
+#    types: [created]
 
 jobs:
   release-linux:
