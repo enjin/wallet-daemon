@@ -302,7 +302,7 @@ where
                     } else {
                         tracing::warn!("Error while polling: {}", e)
                     }
-                },
+                }
             };
         }
     }
@@ -557,7 +557,7 @@ where
                     } else {
                         tracing::warn!("Error while polling: {}", e)
                     }
-                },
+                }
             };
         }
     }
