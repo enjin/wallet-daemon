@@ -1,5 +1,5 @@
 {
-  "node": "ws://localhost:10010",
-  "api": "http://localhost:8000/graphql",
+  "node": "wss://rpc.matrix.blockchain.enjin.io:443",
+  "api": "https://platform.enjin.io/graphql",
   "master_key": "store"
 }

@@ -31,7 +31,7 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
     task::JoinHandle,
 };
-use tracing::instrument;
+use tracing::{instrument, Level};
 
 #[derive(Debug)]
 pub struct PollWalletJob<Client> {
@@ -284,7 +284,7 @@ where
     }
 
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip(self))]
+    #[instrument(level = Level::DEBUG)]
     async fn poll_requests(self) {
         let mut interval = interval(self.delay);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -539,7 +539,7 @@ where
 
     // The spawned poll request task.
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip(self))]
+    #[instrument(level = Level::DEBUG)]
     async fn poll_requests(self) {
         let mut interval = interval(self.delay);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -689,7 +689,7 @@ where
     // Submit the tx hash to the graphql API
     // TODO: Resubmit logic(We could bubble up the errors here instead of directly logging here)
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip_all)]
+    #[instrument(level = Level::DEBUG)]
     async fn submit_wallet_account(
         request_id: i64,
         account: String,
@@ -747,7 +747,7 @@ where
 
     // Handles a single derive wallet request
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip_all)]
+    #[instrument(level = Level::DEBUG)]
     async fn derive_wallet_request_handler(
         wallet_connection_pair: Arc<WalletConnectionPair<T, ChainConnection, ContextProvider>>,
         url: Arc<String>,
@@ -806,7 +806,7 @@ where
     }
 
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip_all)]
+    #[instrument(level = Level::DEBUG)]
     async fn launch_derive_wallet_job_schedulers(mut self) {
         while let Some(requests) = self.rx.recv().await {
             for request in requests {
@@ -986,7 +986,7 @@ where
     // Submit the tx hash to the graphql API
     // TODO: Resubmit logic(We could bubble up the errors here instead of directly logging here)
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip_all)]
+    #[instrument(level = Level::DEBUG)]
     async fn submit_tx_hash(
         tx: T::Hash,
         block: i64,
@@ -1114,7 +1114,7 @@ where
 
     // Handles a single sign request
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip_all)]
+    #[instrument(level = Level::DEBUG)]
     async fn sign_request_handler(
         wallet_connection_pair: Arc<WalletConnectionPair<T, ChainConnection, ContextProvider>>,
         url: Arc<String>,
@@ -1207,7 +1207,7 @@ where
 
     // Cycles through sign request and launch a new background task to process it
     #[cfg(not(tarpaulin_include))]
-    #[instrument(skip(self))]
+    #[instrument(level = Level::DEBUG)]
     async fn launch_sign_job_schedulers(mut self) {
         while let Some(requests) = self.rx.recv().await {
             for request in requests {
