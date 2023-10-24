@@ -284,7 +284,7 @@ where
     }
 
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip(self))]
     async fn poll_requests(self) {
         let mut interval = interval(self.delay);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -296,7 +296,13 @@ where
                         tracing::error!("Scheduler can't receive requests: {}", e);
                     }
                 }
-                Err(e) => tracing::warn!("Error while polling: {}", e),
+                Err(e) => {
+                    if e.to_string() == "Empty response body" {
+                        tracing::warn!("No wallets to derive")
+                    } else {
+                        tracing::warn!("Error while polling: {}", e)
+                    }
+                },
             };
         }
     }
@@ -533,7 +539,7 @@ where
 
     // The spawned poll request task.
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip(self))]
     async fn poll_requests(self) {
         let mut interval = interval(self.delay);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -545,7 +551,13 @@ where
                         tracing::error!("Scheduler can't receive request: {}", e);
                     }
                 }
-                Err(e) => tracing::warn!("Error while polling: {}", e),
+                Err(e) => {
+                    if e.to_string() == "Empty response body" {
+                        tracing::warn!("No transactions to sign")
+                    } else {
+                        tracing::warn!("Error while polling: {}", e)
+                    }
+                },
             };
         }
     }
@@ -677,7 +689,7 @@ where
     // Submit the tx hash to the graphql API
     // TODO: Resubmit logic(We could bubble up the errors here instead of directly logging here)
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip_all)]
     async fn submit_wallet_account(
         request_id: i64,
         account: String,
@@ -735,7 +747,7 @@ where
 
     // Handles a single derive wallet request
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip_all)]
     async fn derive_wallet_request_handler(
         wallet_connection_pair: Arc<WalletConnectionPair<T, ChainConnection, ContextProvider>>,
         url: Arc<String>,
@@ -794,7 +806,7 @@ where
     }
 
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip_all)]
     async fn launch_derive_wallet_job_schedulers(mut self) {
         while let Some(requests) = self.rx.recv().await {
             for request in requests {
@@ -974,7 +986,7 @@ where
     // Submit the tx hash to the graphql API
     // TODO: Resubmit logic(We could bubble up the errors here instead of directly logging here)
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip_all)]
     async fn submit_tx_hash(
         tx: T::Hash,
         block: i64,
@@ -1102,7 +1114,7 @@ where
 
     // Handles a single sign request
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip_all)]
     async fn sign_request_handler(
         wallet_connection_pair: Arc<WalletConnectionPair<T, ChainConnection, ContextProvider>>,
         url: Arc<String>,
@@ -1195,7 +1207,7 @@ where
 
     // Cycles through sign request and launch a new background task to process it
     #[cfg(not(tarpaulin_include))]
-    #[instrument]
+    #[instrument(skip(self))]
     async fn launch_sign_job_schedulers(mut self) {
         while let Some(requests) = self.rx.recv().await {
             for request in requests {
