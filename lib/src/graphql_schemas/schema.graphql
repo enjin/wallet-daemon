@@ -70,6 +70,7 @@ type Mutation {
 
   UpdateTransaction(
     id: Int!
+    signingAccount: String
     state: TransactionState
     transactionHash: String
     signedAtBlock: Int
