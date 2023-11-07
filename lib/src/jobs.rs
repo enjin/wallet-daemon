@@ -1289,11 +1289,20 @@ impl TryFrom<mark_and_list_pending_transactions::MarkAndListPendingTransactionsM
             tracing::error!("Error decoding: {:?}", e);
             e
         })?;
-        Ok(Self {
-            transaction,
-            request_id: get_pending_sign_requests.node.id,
-            external_id: get_pending_sign_requests.node.wallet.external_id,
-        })
+
+        if let Some(wallet) = get_pending_sign_requests.node.wallet {
+            Ok(Self {
+                transaction,
+                request_id: get_pending_sign_requests.node.id,
+                external_id: wallet.external_id,
+            })
+        } else {
+            Ok(Self {
+                transaction,
+                request_id: get_pending_sign_requests.node.id,
+                external_id: None,
+            })
+        }
     }
 }
 
