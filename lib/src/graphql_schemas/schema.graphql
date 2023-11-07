@@ -15,7 +15,7 @@ type Transaction {
   transactionId: String
   state: TransactionState!
   transactionHash: String
-  wallet: Wallet!
+  wallet: Wallet
   encodedData: String!
 }
 
