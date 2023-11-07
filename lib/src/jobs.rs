@@ -45,6 +45,7 @@ pub struct PollWalletJob<Client> {
 }
 
 pub async fn submit_abandoned_state<Client>(
+    account_id: Option<String>,
     block: i64,
     request_id: i64,
     url: Arc<String>,
@@ -60,10 +61,12 @@ pub async fn submit_abandoned_state<Client>(
         .with_multiplier(2.0)
         .with_max_elapsed_time(Some(std::time::Duration::from_secs(120)))
         .build();
+
     let request_body = UpdateTransaction::build_query(update_transaction::Variables {
         state: Some(update_transaction::TransactionState::ABANDONED),
         transaction_hash: None,
         signed_at_block: Some(block),
+        signing_account: account_id,
         id: request_id,
     });
     let result = backoff::future::retry(setting, || async {
@@ -520,6 +523,7 @@ where
             if let Err(e) = maybe_request {
                 tracing::error!("Error converting to sign request {:?}", e);
                 submit_abandoned_state(
+                    None,
                     0i64,
                     request_id.clone(),
                     self.url.clone(),
@@ -988,6 +992,7 @@ where
     #[cfg(not(tarpaulin_include))]
     #[instrument(level = Level::DEBUG)]
     async fn submit_tx_hash(
+        account_id: Option<String>,
         tx: T::Hash,
         block: i64,
         request_id: i64,
@@ -1007,6 +1012,7 @@ where
             state: Some(update_transaction::TransactionState::BROADCAST),
             transaction_hash: Some(format!("0x{hash}")),
             signed_at_block: Some(block),
+            signing_account: account_id,
             id: request_id,
         });
         let res = backoff::future::retry(setting, || async {
@@ -1112,6 +1118,30 @@ where
         };
     }
 
+    async fn get_account_id(
+        wallet: &EfinityWallet<T, PairSig<T>, ContextProvider>,
+        external_id: &Option<String>,
+    ) -> Option<String> {
+        if let Some(external_id) = external_id {
+            // This has security implications beware
+            let wallet = wallet.derive(format!("//{external_id}").into(), None);
+
+            match wallet {
+                Err(e) => {
+                    tracing::error!(
+                        "Error deriving wallet with external id {}: {:?}",
+                        external_id,
+                        e
+                    );
+                    None
+                }
+                Ok((wallet, _)) => Some(wallet.account_id().await.unwrap().to_string()),
+            }
+        } else {
+            Some(wallet.account_id().await.unwrap().to_string())
+        }
+    }
+
     // Handles a single sign request
     #[cfg(not(tarpaulin_include))]
     #[instrument(level = Level::DEBUG)]
@@ -1176,10 +1206,14 @@ where
             .unwrap_or_default();
         tracing::trace!("Block number: {:?}", block);
 
+        // TODO: Check if has to derive
+        let account_id = Self::get_account_id(&wallet_connection_pair.wallet, &external_id).await;
+
         match res {
             Ok(tx) => {
                 tracing::trace!("Transaction: {:?} Signed", tx);
                 Self::submit_tx_hash(
+                    account_id,
                     tx,
                     block.as_i64(),
                     request_id,
@@ -1193,6 +1227,7 @@ where
             Err(e) => {
                 tracing::error!("Error signing {:?}", e);
                 submit_abandoned_state(
+                    account_id,
                     block.as_i64(),
                     request_id,
                     url,
@@ -1331,11 +1366,12 @@ pub struct MarkAndListPendingTransactions;
 /// ```ignore
 /// mutation UpdateTransaction(
 ///     $id: Int!
+///     $signingAccount: String
 ///     $state: TransactionState
 ///     $transactionHash: String
 ///     $signedAtBlock: Int
 /// ) {
-///     UpdateTransaction(id: $id, state: $state, transactionHash: $transactionHash, signedAtBlock: $signedAtBlock)
+///     UpdateTransaction(id: $id, signingAccount: $signingAccount, state: $state, transactionHash: $transactionHash, signedAtBlock: $signedAtBlock)
 /// }
 /// ```
 #[derive(GraphQLQuery)]
