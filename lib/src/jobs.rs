@@ -350,15 +350,15 @@ pub fn create_job_pair<T>(
     PollJob<reqwest::Client>,
     SignProcessor<T, reqwest::Client, ChainConnector<T>, ChainConnector<T>>,
 )
-where
-    T: subxt::Config<AccountId = <<<T as subxt::Config>::Signature as Verify>::Signer as IdentifyAccount>::AccountId> + Send + Sync,
-    <T as subxt::Config>::AccountId: Display + Sync + Clone + 'static,
-    <T as subxt::Config>::Address: std::fmt::Debug + Send,
-    T::Extrinsic: Send + Sync,
-    T::BlockNumber: Into<u64>,
-    T::Address: From<T::AccountId>,
-    T::Signature: From<sp_core::sr25519::Signature> + subxt::sp_runtime::traits::Verify,
-    <T::Signature as Verify>::Signer: From<sp_core::sr25519::Public>,
+    where
+        T: subxt::Config<AccountId = <<<T as subxt::Config>::Signature as Verify>::Signer as IdentifyAccount>::AccountId> + Send + Sync,
+        <T as subxt::Config>::AccountId: Display + Sync + Clone + 'static,
+        <T as subxt::Config>::Address: std::fmt::Debug + Send,
+        T::Extrinsic: Send + Sync,
+        T::BlockNumber: Into<u64>,
+        T::Address: From<T::AccountId>,
+        T::Signature: From<sp_core::sr25519::Signature> + subxt::sp_runtime::traits::Verify,
+        <T::Signature as Verify>::Signer: From<sp_core::sr25519::Public>,
 {
     let client = Arc::new(reqwest::Client::new());
     create_job_pair_with_executor(
@@ -384,18 +384,18 @@ pub(crate) fn create_job_pair_with_executor<T, Client, ChainConnection, ContextP
     PollJob<Client>,
     SignProcessor<T, Client, ChainConnection, ContextProvider>,
 )
-where
-    T: subxt::Config<AccountId = <<<T as subxt::Config>::Signature as Verify>::Signer as IdentifyAccount>::AccountId>,
-    T: Send + Sync,
-    <T as subxt::Config>::AccountId: Display + Sync + Clone + 'static,
-    <T as subxt::Config>::Address: std::fmt::Debug + Send,
-    T::Extrinsic: Send + Sync,
-    T::BlockNumber: Into<u64>,
-    T::Address: From<T::AccountId>,
-    T::Signature: From<sp_core::sr25519::Signature> + subxt::sp_runtime::traits::Verify,
-    <T::Signature as Verify>::Signer: From<sp_core::sr25519::Public>,
-    Client: RequestExecutor + Debug + Send + Sync + 'static,
-    ContextProvider: ContextDataProvider<
+    where
+        T: subxt::Config<AccountId = <<<T as subxt::Config>::Signature as Verify>::Signer as IdentifyAccount>::AccountId>,
+        T: Send + Sync,
+        <T as subxt::Config>::AccountId: Display + Sync + Clone + 'static,
+        <T as subxt::Config>::Address: std::fmt::Debug + Send,
+        T::Extrinsic: Send + Sync,
+        T::BlockNumber: Into<u64>,
+        T::Address: From<T::AccountId>,
+        T::Signature: From<sp_core::sr25519::Signature> + subxt::sp_runtime::traits::Verify,
+        <T::Signature as Verify>::Signer: From<sp_core::sr25519::Public>,
+        Client: RequestExecutor + Debug + Send + Sync + 'static,
+        ContextProvider: ContextDataProvider<
             ContextData = EfinityContextData<T::Hash, T::Index>,
             AccountId = T::AccountId,
             Nonce = T::Index,
@@ -404,7 +404,7 @@ where
         + Sync
         + 'static
         + Debug,
-    ChainConnection: ChainConn<Hash = T::Hash, Transaction = UncheckedExtrinsic<T>>
+        ChainConnection: ChainConn<Hash = T::Hash, Transaction = UncheckedExtrinsic<T>>
         + Send
         + Sync
         + Debug
@@ -849,7 +849,6 @@ impl TryFrom<get_pending_wallets::GetPendingWalletsGetPendingWalletsEdges> for D
             .external_id
             .ok_or("No external id to derive the wallet")?;
 
-        println!("ExternalId: {:?}", external_id);
         Ok(Self {
             external_id,
             request_id: get_pending_wallets_requests.node.id,
@@ -1008,6 +1007,7 @@ where
             .with_max_elapsed_time(Some(std::time::Duration::from_secs(120)))
             .build();
         let hash = hex::encode(tx);
+
         let request_body = UpdateTransaction::build_query(update_transaction::Variables {
             state: Some(update_transaction::TransactionState::BROADCAST),
             transaction_hash: Some(format!("0x{hash}")),
@@ -1100,7 +1100,7 @@ where
     ) {
         if let Some(external_id) = external_id {
             // This has security implications beware
-            let wallet = wallet.derive(format!("//{external_id}").into(), None);
+            let wallet = wallet.derive(external_id.into(), None);
             match wallet {
                 Err(e) => {
                     tracing::error!(
@@ -1124,7 +1124,7 @@ where
     ) -> Option<String> {
         if let Some(external_id) = external_id {
             // This has security implications beware
-            let wallet = wallet.derive(format!("//{external_id}").into(), None);
+            let wallet = wallet.derive(external_id.into(), None);
 
             match wallet {
                 Err(e) => {
@@ -1271,7 +1271,7 @@ where
 
 // Conversion from query response to SignRequest
 impl TryFrom<mark_and_list_pending_transactions::MarkAndListPendingTransactionsMarkAndListPendingTransactionsEdges>
-    for SignRequest
+for SignRequest
 {
     type Error = Box<dyn Error>;
 
