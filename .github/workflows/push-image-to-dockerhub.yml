@@ -1,0 +1,29 @@
+name: Publish docker image to DockerHub
+
+on:
+  workflow_dispatch:
+    
+  push:
+    branches:
+    - master
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login, build, tag, and push image to DockerHub
+        env:
+          DOCKERHUB_API_USERNAME: ${{ secrets.DOCKERHUB_API_USERNAME }}
+          DOCKERHUB_API_TOKEN: ${{ secrets.DOCKERHUB_API_TOKEN }}
+          DOCKER_REPOSITORY: daemon
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker login --username $DOCKERHUB_API_USERNAME --password $DOCKERHUB_API_TOKEN
+          docker build -t enjin/$DOCKER_REPOSITORY:$IMAGE_TAG -f docker/Dockerfile .
+          docker push enjin/$DOCKER_REPOSITORY:$IMAGE_TAG
