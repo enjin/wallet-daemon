@@ -20,7 +20,7 @@ jobs:
         env:
           DOCKERHUB_API_USERNAME: ${{ secrets.DOCKERHUB_API_USERNAME }}
           DOCKERHUB_API_TOKEN: ${{ secrets.DOCKERHUB_API_TOKEN }}
-          DOCKER_REPOSITORY: daemon
+          DOCKER_REPOSITORY: wallet-daemon
           IMAGE_TAG: ${{ github.ref_name }}
         run: |
           docker login --username $DOCKERHUB_API_USERNAME --password $DOCKERHUB_API_TOKEN
