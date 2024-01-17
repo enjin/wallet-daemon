@@ -13,8 +13,9 @@ use crate::{
     wallet_trait::{KeyDerive, Wallet},
 };
 use codec::Encode;
+use sp_core::Pair;
 use sp_keyring::AccountKeyring;
-use subxt::DefaultConfig;
+use subxt::{DefaultConfig, Signer};
 
 const EXTRINSIC: &'static str = "2800016400000000000000016400000000000000000000000000000000";
 const SIGNED_EXTRINSIC: &'static str = "11028400d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d0128b46d16901b3544e810c23632291ddd224afa4b9bc041df47a7375e1bf3610277eb58041d45fc3ceec2df308601b5139f4f615acf8acf0809d897ddfa695e8e030000002800016400000000000000016400000000000000000000000000000000";
@@ -22,6 +23,10 @@ const EXTRINSIC_STORE_SIGNATURE: &'static str = "0100547f46358c6a32dd1ffb28ee537
 const DERIVED_SIGNED_EXTRINSIC: &'static str = "11028400b2955884765612b245243f634451ffd2e6f3453a70c8dad82d30c6600c0b6010014cb680629ffd3450ecaade6e3f0c17a2b8837966f4fff4c839b699f149d875226eef3bfd15667db83fc27a885af8a2a2795eefe0e7653bed1864daf31309e486030000002800016400000000000000016400000000000000000000000000000000";
 const ALICE_ACCOUNT: &'static str = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const STORE_ACCOUNT: &'static str = "5DyVgr6rw7Z8zytoJ6vcUNW2uCnWweXiyAqBYBotU7YAfTFV";
+
+const MNEMONIC_PHRASE: &'static str = "total east north winner target fitness custom prize drive arrange snap dolphin";
+
+const PAIR_PASSWORD: &'static str = "SuperStrongPassword995@";
 
 #[tokio::test]
 async fn wallet_signs() {
@@ -56,6 +61,37 @@ async fn wallet_reset_nonce() {
     let signer = PairSig::new(AccountKeyring::Alice.pair());
     let wallet = MockEfinityWallet::new(&context_provider, signer);
     wallet.reset_nonce().await.unwrap();
+}
+
+#[tokio::test]
+async fn wallet_derivation() {
+    let keypair  = sp_core::sr25519::Pair::from_phrase(MNEMONIC_PHRASE, Some(PAIR_PASSWORD)).expect("Failed to create keypair");
+    let context_provider = Arc::new(MockEfinityDataProvider::new());
+    let signer = PairSig::new(keypair.0);
+
+    assert_eq!(
+        format!("{}", signer.account_id()),
+        "5D27GnTkx4J8nreHAvW8fL1irobW7EPEpbhgbeRyVmVv8nsA"
+    );
+
+    let wallet = MockEfinityWallet::new(&context_provider, signer);
+    let new_wallet = wallet.derive("player_1_id".into(), None).unwrap().0;
+    assert_eq!(
+        format!("{}", new_wallet.account_id().await.unwrap()),
+        "5CS8AddHCnRmEFC9opAPqbrsTRtZ8CwAjKRhdnabCnc1tZZ6"
+    );
+
+    let new_wallet = wallet.derive("player_2_id".into(), None).unwrap().0;
+    assert_eq!(
+        format!("{}", new_wallet.account_id().await.unwrap()),
+        "5CcrdaTD52u2E7Z4wmpwEmmnAdD5eAWRbi4M2ftShwbHQVFT"
+    );
+
+    let new_wallet = wallet.derive("player_9999_id".into(), None).unwrap().0;
+    assert_eq!(
+        format!("{}", new_wallet.account_id().await.unwrap()),
+        "5G97pVHYwVBvcrpzLEhNWaQS8UFLHrxMqtYpE7wp5AQFBs94"
+    );
 }
 
 #[tokio::test]
