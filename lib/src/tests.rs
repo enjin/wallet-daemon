@@ -24,7 +24,8 @@ const DERIVED_SIGNED_EXTRINSIC: &'static str = "11028400b2955884765612b245243f63
 const ALICE_ACCOUNT: &'static str = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const STORE_ACCOUNT: &'static str = "5DyVgr6rw7Z8zytoJ6vcUNW2uCnWweXiyAqBYBotU7YAfTFV";
 
-const MNEMONIC_PHRASE: &'static str = "total east north winner target fitness custom prize drive arrange snap dolphin";
+const MNEMONIC_PHRASE: &'static str =
+    "total east north winner target fitness custom prize drive arrange snap dolphin";
 
 const PAIR_PASSWORD: &'static str = "SuperStrongPassword995@";
 
@@ -65,7 +66,8 @@ async fn wallet_reset_nonce() {
 
 #[tokio::test]
 async fn wallet_derivation() {
-    let keypair  = sp_core::sr25519::Pair::from_phrase(MNEMONIC_PHRASE, Some(PAIR_PASSWORD)).expect("Failed to create keypair");
+    let keypair = sp_core::sr25519::Pair::from_phrase(MNEMONIC_PHRASE, Some(PAIR_PASSWORD))
+        .expect("Failed to create keypair");
     let context_provider = Arc::new(MockEfinityDataProvider::new());
     let signer = PairSig::new(keypair.0);
 
@@ -116,7 +118,7 @@ async fn wallet_derive_works() {
     assert_eq!(actual.encode()[101..], expected[101..]);
 }
 
-const NODE_URL: &'static str = "ws://localhost:10010";
+const NODE_URL: &'static str = "wss://rpc.matrix.canary.enjin.io:443";
 const GRAPHQL_URL: &'static str = "http://localhost:8000/graphql";
 const PLATFORM_AUTH_KEY: &'static str = "KEY";
 const KEY_STORAGE: &'static str = "../store";
