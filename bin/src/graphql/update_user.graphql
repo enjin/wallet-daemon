@@ -1,0 +1,5 @@
+mutation UpdateUser(
+  $account: String!
+) {
+  UpdateUser(account: $account)
+}

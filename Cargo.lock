@@ -166,8 +166,13 @@ dependencies = [
 name = "bin"
 version = "0.1.0"
 dependencies = [
+ "graphql_client",
+ "log",
  "parity-scale-codec",
+ "reqwest",
  "scale-info",
+ "serde",
+ "serde_json",
  "subxt",
  "tokio",
  "tracing-subscriber 0.3.10",
