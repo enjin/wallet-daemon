@@ -52,7 +52,7 @@ Note that right now the platform only correctly encodes transactions for the mat
 
 Externally the main things in `lib` are the "jobs" (in the aptly named module `jobs`) which are tasks run in the background:
 * `PollJob` which continually polls the platform and sends the responses to the other job.
-* `SignProccesor` which signs the recieved transaction requests it's sent and gives the txHash back to the platform.
+* `SignProccesor` which signs the received transaction requests it's sent and gives the txHash back to the platform.
 
 You will also need to load the configuration to pass to the jobs with the `load_config` in `config_loader` module.
 
@@ -64,10 +64,10 @@ From inside `lib`, other than the `job` and `config_loader`, the important modul
 The `bin` uses the jobs and the configuration loading to execute the following:
 1. Load the configuration, including the key, which it creates if it doesn't exist.
 1. Start off the jobs which then:
-1. Continously polls the platform for new transactions, the polled transactions are mutated to `PROCCESING`.
-1. Sign a transaction request when it is recieved.
+1. Continuously polls the platform for new transactions, the polled transactions are mutated to `PROCCESING`.
+1. Sign a transaction request when it is received.
 1. Send the signed transaction to the blockchain.
-1. The recieved transaction hash is submitted to the platform changing the state of the transaction to `BROADCAST`.
+1. The received transaction hash is submitted to the platform changing the state of the transaction to `BROADCAST`.
 1. When `ctrl-c` is pressed stop the program.
 
 ## Deployment

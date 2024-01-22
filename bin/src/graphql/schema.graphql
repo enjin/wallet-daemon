@@ -1,0 +1,9 @@
+schema {
+  mutation: Mutation
+}
+
+type Mutation {
+  UpdateUser(
+    account: String!
+  ): Boolean!
+}
