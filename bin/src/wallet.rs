@@ -78,14 +78,15 @@ async fn update_user(
 
 fn write_seed(seed: String) -> std::io::Result<()> {
     let split_seed: Vec<String> = seed.split("///").map(|s| s.to_string()).collect();
-    let mnemonic = &split_seed[0];
-    let pass = split_seed.get(1);
-    let password: Option<&str> = match pass {
-        Some(p) => Some(p),
-        None => None,
-    };
+    let mnemonic = split_seed[0].clone();
+    let password = split_seed
+        .iter()
+        .skip(1)
+        .cloned()
+        .collect::<Vec<String>>()
+        .join(" ");
 
-    let key = sr25519::Pair::from_phrase(&mnemonic, password)
+    let key = sr25519::Pair::from_phrase(&mnemonic, Some(&*password))
         .expect("Invalid mnemonic phrase or password");
 
     let public_key = key.0.public();
@@ -98,7 +99,7 @@ fn write_seed(seed: String) -> std::io::Result<()> {
     println!("Store file name: {}", file_name);
 
     let mut file = File::create(format!("store/{}", file_name))?;
-    file.write_all(format!("\"{}\"", seed).as_bytes())?;
+    file.write_all(format!("\"{}\"", mnemonic).as_bytes())?;
 
     Ok(())
 }
