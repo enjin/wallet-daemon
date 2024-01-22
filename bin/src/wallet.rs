@@ -1,17 +1,24 @@
-//! Wallet daemon for efinity blockchain
+//! Wallet daemon for Enjin Matrixchain
 //!
-//! It polls for transactions, signs them and sends them to the blockchain.
+//! It polls for transactions from Enjin Platform
+//! signs them and sends them to the blockchain.
 //!
 //! A configuration file is needed(See README for specifics)
 
+use sp_core::crypto::Ss58Codec;
+use sp_core::{sr25519, Pair};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::{sync::Arc, time::Duration};
 
 use graphql_client::{GraphQLQuery, Response};
 use reqwest;
 use serde::Deserialize;
 use serde_json::Value;
+use std::env;
 use std::error::Error;
+use std::process::exit;
 use subxt::DefaultConfig;
 use tokio::signal;
 use wallet_lib::wallet_trait::Wallet;
@@ -64,36 +71,75 @@ async fn update_user(
         .await?;
 
     let result: Response<update_user::ResponseData> = res.json().await?;
-    let data = result.data.expect("Missing response");
+    let data = result.data.expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 
     Ok(data.update_user)
 }
 
+fn write_seed(seed: String) -> std::io::Result<()> {
+    let split_seed: Vec<String> = seed.split("///").map(|s| s.to_string()).collect();
+    let mnemonic = &split_seed[0];
+    let pass = split_seed.get(1);
+    let password: Option<&str> = match pass {
+        Some(p) => Some(p),
+        None => None,
+    };
+
+    let key = sr25519::Pair::from_phrase(&mnemonic, password)
+        .expect("Invalid mnemonic phrase or password");
+
+    let public_key = key.0.public();
+    let address = public_key.to_ss58check();
+    let hex_key = hex::encode(public_key);
+    let file_name = format!("73723235{}", hex_key);
+
+    println!("Public Key (Hex): 0x{}", hex_key.clone());
+    println!("Address (SS58): {}", address);
+    println!("Store file name: {}", file_name);
+
+    let mut file = File::create(format!("store/{}", file_name))?;
+    file.write_all(format!("\"{}\"", seed).as_bytes())?;
+
+    Ok(())
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    if let Some(arg) = args.first() {
+        if arg == "import" {
+            println!("Enjin Platform - Import Wallet");
+            let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
+            write_seed(seed).expect("Failed to import your wallet");
+            exit(0)
+        }
+    }
+
     tracing_subscriber::fmt::init();
 
     let (wallet_pair, graphql_endpoint, token) = load_wallet::<DefaultConfig>(load_config()).await;
-
     let public_key = wallet_pair
         .wallet
         .account_id()
         .await
-        .expect("Failed to decode daemon public key");
+        .expect("We have failed to decode your daemon public key");
 
     let is_tenant = get_packages(graphql_endpoint.clone())
         .await
-        .expect("Failed to connect with Enjin Platform");
+        .expect("We could not connect to Enjin Platform, check your connection or the url");
 
     if is_tenant {
         let updated = update_user(graphql_endpoint.clone(), token.clone(), public_key.to_string())
             .await
-            .expect("You are connected to a multi-tenant platform but the daemon failed to update your user");
+            .expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 
-        println!("** Updated your wallet daemon address at Enjin Platform **");
+        println!(
+            "** Your account at Enjin Platform has been updated with your wallet daemon address"
+        );
 
         if !updated {
-            panic!("You are connected to a multi-tenant platform but the daemon failed to update your user")
+            panic!("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.")
         }
     }
 
