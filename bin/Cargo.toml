@@ -10,6 +10,7 @@ path = "src/wallet.rs"
 
 [dependencies]
 wallet_lib = { path = "../lib" }
+rpassword = "7.3"
 tokio = { version = "1.28.0", default-features = false, features = [
     "rt",
     "macros",
@@ -29,3 +30,6 @@ reqwest = "0.11.10"
 graphql_client = "0.10.0"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_json = "1.0.79"
+sp-core = { version = "6.0.0", git = "https://github.com/paritytech/substrate.git", features = ["full_crypto"] }
+sp-application-crypto = { version = "6.0.0", git = "https://github.com/paritytech/substrate.git" }
+hex = "0.4.3"
