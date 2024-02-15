@@ -34,4 +34,4 @@ COPY --from=builder /wallet/target/release/wallet /usr/local/bin
 # (In the current example: "duty captain man fantasy angry window release hammer suspect bullet panda special")
 # KEY_PASS = The pass of the key which when originally generated is set through the `KEY_PASS` env variable. (In the current example: `example`)
 # PLATFORM_KEY = The platform key is the API token used to authenticate the wallet daemon so it can request new transactions from the platform to sign.
-CMD ["wallet"]
+ENTRYPOINT ["start.sh"]
