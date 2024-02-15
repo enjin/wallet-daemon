@@ -1,7 +1,3 @@
 target/
-integration-tests/
 store/
-config.json
-config-testnet.json
-data-staging/
-docker/
+config-test.json
