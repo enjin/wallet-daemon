@@ -10,6 +10,7 @@ path = "src/wallet.rs"
 
 [dependencies]
 wallet_lib = { path = "../lib" }
+rtoolbox = "0.0.2"
 rpassword = "7.3"
 tokio = { version = "1.28.0", default-features = false, features = [
     "rt",
