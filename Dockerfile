@@ -28,6 +28,7 @@ RUN rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /wallet/target/release/wallet /usr/local/bin
 COPY --from=builder /wallet/scripts/start.sh /usr/local/bin
+RUN chmod +x /usr/local/bin/start.sh
 
 # STORE_NAME = the storage name, this is a hex number which is the file name where the key is stored,
 # it's generated when the key is generate (In the current example: `73723235301cb3057d43941d5f631613aa1661be0354d39e34f23d4ef527396b10d2bb7a`)
