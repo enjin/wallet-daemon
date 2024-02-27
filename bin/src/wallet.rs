@@ -25,10 +25,12 @@ use wallet_lib::wallet_trait::Wallet;
 use wallet_lib::*;
 
 /// Time in milliseconds that a block is expected to be generated.
-const BLOCKTIME_MS: u64 = 12000;
+const POLL_TRANSACTION_MS: u64 = 12000;
+const POLL_ACCOUNT_MS: u64 = 2500;
 
 /// Page size for the number of transaction requests that are brought with each polling.
-const PAGE_SIZE: usize = 40;
+const TRANSACTION_PAGE_SIZE: usize = 50;
+const ACCOUNT_PAGE_SIZE: usize = 200;
 
 #[derive(GraphQLQuery)]
 #[graphql(
@@ -149,17 +151,17 @@ async fn main() {
     let (poll_job, sign_processor) = create_job_pair(
         graphql_endpoint.clone(),
         String::from(token.clone()),
-        Duration::from_millis(BLOCKTIME_MS),
+        Duration::from_millis(POLL_TRANSACTION_MS),
         Arc::clone(&wallet_pair),
-        PAGE_SIZE.try_into().unwrap(),
+        TRANSACTION_PAGE_SIZE.try_into().unwrap(),
     );
 
     let (poll_wallet_job, derive_wallet_processor) = create_wallet_job_pair(
         graphql_endpoint,
         String::from(token.clone()),
-        Duration::from_millis(BLOCKTIME_MS),
+        Duration::from_millis(POLL_ACCOUNT_MS),
         Arc::clone(&wallet_pair),
-        PAGE_SIZE.try_into().unwrap(),
+        ACCOUNT_PAGE_SIZE.try_into().unwrap(),
     );
 
     poll_job.start_job();
