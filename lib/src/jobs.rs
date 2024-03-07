@@ -1169,28 +1169,29 @@ where
             let transaction = transaction.clone();
             let wallet = &wallet_connection_pair.wallet;
 
+            // TODO: Investigate if there is a way to know when the nonce has been reset to do this a single time
+            // We can't just check for a TransferAllBalance because a transfer with below ED would do the same
+            // And maybe there are other scenarios that could do the same that we need to investigate
+            Self::reset_wallet_nonce(wallet, &external_id).await;
+
             let connection = &wallet_connection_pair.connection;
             tracing::debug!("Signing for external_id: {external_id:?}, request_id: {request_id:?}");
             match Self::sign_and_submit(wallet, connection, transaction, external_id.clone()).await {
                 Ok(tx_hash) => Ok(tx_hash),
                 Err(ConnectionError::NoConnection) => {
                     tracing::warn!("external_id: {external_id:?}, request_id: {request_id:?}, No connection");
-                    Self::reset_wallet_nonce(wallet, &external_id).await;
                     Err(backoff::Error::transient(()))
                 },
                 Err(ConnectionError::ConnectionError(subxt::BasicError::Rpc(e))) => {
                     tracing::warn!("external_id: {external_id:?}, request_id: {request_id:?}, Error submitting transaction {e:?}");
-                    Self::reset_wallet_nonce(wallet, &external_id).await;
                     Err(backoff::Error::transient(()))
                 },
                 Err(ConnectionError::ConnectionError(subxt::BasicError::Invalid(e))) => {
                     tracing::warn!("external_id: {external_id:?}, request_id: {request_id:?}, Error processing transaction {e:?}");
-                    Self::reset_wallet_nonce(wallet, &external_id).await;
                     Err(backoff::Error::transient(()))
                 },
                 _ => {
                     tracing::warn!("Failed to submit for external_id: {external_id:?}, request_id: {request_id:?}");
-                    Self::reset_wallet_nonce(wallet, &external_id).await;
                     Err(backoff::Error::Permanent(()))
                 }
             }
