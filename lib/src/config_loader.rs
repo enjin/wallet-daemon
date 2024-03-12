@@ -272,11 +272,11 @@ where
 
     println!("Wallet daemon address in different formats:");
     println!(
-        "{}",
+        "Matrix: {}",
         converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
     );
     println!(
-        "{}",
+        "Canary: {}",
         converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030))
     );
 

@@ -5,6 +5,8 @@ services:
     image: enjin/wallet-daemon:latest
     build:
       context: .
+      args:
+        DOCKER_BUILDKIT: 1
     env_file:
       - .env
     volumes:
