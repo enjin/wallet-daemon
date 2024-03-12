@@ -276,7 +276,7 @@ where
         converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
     );
     println!(
-        "Canary Matrix: {}",
+        "Canary: {}",
         converted_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030))
     );
 
