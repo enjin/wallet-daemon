@@ -1,0 +1,7 @@
+# Ensure all text files use LF encoding
+* text=lf
+
+# Ensure those files also use LF
+Dockerfile  eol=lf
+*.sh        eol=lf
+.env        eol=lf

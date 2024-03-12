@@ -26,3 +26,5 @@ jobs:
           docker login --username $DOCKERHUB_API_USERNAME --password $DOCKERHUB_API_TOKEN
           docker build -t enjin/$DOCKER_REPOSITORY:$IMAGE_TAG .
           docker push enjin/$DOCKER_REPOSITORY:$IMAGE_TAG
+          docker tag enjin/$DOCKER_REPOSITORY:$IMAGE_TAG enjin/$DOCKER_REPOSITORY:latest
+          docker push enjin/$DOCKER_REPOSITORY:latest
