@@ -1169,6 +1169,10 @@ where
             let transaction = transaction.clone();
             let wallet = &wallet_connection_pair.wallet;
 
+            /// This can be improved by making the daemon process the transactions in sequence
+            /// Since it process in parallel and we can have a transaction that deletes the account
+            Self::reset_wallet_nonce(wallet, &external_id).await;
+
             let connection = &wallet_connection_pair.connection;
             tracing::debug!("Signing for external_id: {external_id:?}, request_id: {request_id:?}");
             match Self::sign_and_submit(wallet, connection, transaction, external_id.clone()).await {
