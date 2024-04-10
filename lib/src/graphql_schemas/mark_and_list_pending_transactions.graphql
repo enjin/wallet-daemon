@@ -5,6 +5,7 @@ mutation MarkAndListPendingTransactions($after: String, $first: Int) {
       node {
         id
         encodedData
+        network
         wallet {
           externalId
           managed

@@ -118,19 +118,22 @@ pub type PairSig<T> = PairSigner<T, Sr25519Pair>;
 /// See the `config.json` file on the root directory to see an example.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct Configuration {
-    /// Url of the node to connect to.
+    /// Url of the matrix.
     node: String,
+    /// Url of the relay.
+    relay_node: String,
     /// Stored key path
     master_key: PathBuf,
-    /// Endpoint for the graphql api
+    /// Platform GraphQL endpoint.
     api: String,
 }
 
 #[cfg(test)]
 impl Configuration {
-    pub(crate) fn new(node: String, master_key: PathBuf, api: String) -> Self {
+    pub(crate) fn new(node: String, relay_node: String, master_key: PathBuf, api: String) -> Self {
         Self {
             node,
+            relay_node,
             master_key,
             api,
         }
