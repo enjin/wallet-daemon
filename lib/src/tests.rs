@@ -22,7 +22,7 @@ const SIGNED_EXTRINSIC: &'static str = "11028400d43593c715fdd31c61141abd04a99fd6
 const EXTRINSIC_STORE_SIGNATURE: &'static str = "0100547f46358c6a32dd1ffb28ee537313a674dc3dc882beb3246e03aa4dc246022f01cc0503ca9ba07ad2a4aef55d1b33a8b5b72824d83f603493745c7dadd995c125e62e266d5b841f0feca30dadbfd5193217c65eba4efa6ad05d450200b8ecdf8903000000";
 const DERIVED_SIGNED_EXTRINSIC: &'static str = "11028400b2955884765612b245243f634451ffd2e6f3453a70c8dad82d30c6600c0b6010014cb680629ffd3450ecaade6e3f0c17a2b8837966f4fff4c839b699f149d875226eef3bfd15667db83fc27a885af8a2a2795eefe0e7653bed1864daf31309e486030000002800016400000000000000016400000000000000000000000000000000";
 const ALICE_ACCOUNT: &'static str = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
-const STORE_ACCOUNT: &'static str = "5DyVgr6rw7Z8zytoJ6vcUNW2uCnWweXiyAqBYBotU7YAfTFV";
+const STORE_ACCOUNT: &'static str = "5FZY3QFDoLrm8RJXZkEA4EEVZXAXi4FoZhUYuDqQ2xFeNoAM";
 
 const MNEMONIC_PHRASE: &'static str =
     "total east north winner target fitness custom prize drive arrange snap dolphin";
@@ -120,9 +120,9 @@ async fn wallet_derive_works() {
 
 const RELAY_NODE_URL: &'static str = "wss://rpc.relay.canary.enjin.io:443";
 const NODE_URL: &'static str = "wss://rpc.matrix.canary.enjin.io:443";
-const GRAPHQL_URL: &'static str = "http://localhost:8000/graphql";
+const GRAPHQL_URL: &'static str = "https://platform.canary.enjin.io/graphql";
 const PLATFORM_AUTH_KEY: &'static str = "KEY";
-const KEY_STORAGE: &'static str = "../store";
+const KEY_STORAGE: &'static str = "store";
 const KEY_STORAGE_DEFAULT: &'static str = "store";
 const KEY_PASSWORD: &'static str = "TEST";
 const CONFIG_FILE: &'static str = "config-test.json";
