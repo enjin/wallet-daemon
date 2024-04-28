@@ -20,6 +20,7 @@
 //!    let (poll_job, sign_processor) = create_job_pair(
 //!        graphql_endpoint,
 //!        token,
+//!        String::from("matrix"),
 //!        Duration::from_millis(6000),
 //!        Arc::new(connection_pair),
 //!        10,

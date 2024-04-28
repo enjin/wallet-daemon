@@ -143,6 +143,7 @@ impl RequestExecutor for MockClient {
                                 "node": {
                                     "id": 1,
                                     "encodedData": "0x2800016400000000000000016400000000000000000000000000000000",
+                                    "network": "matrix",
                                     "wallet": {
                                         "externalId": null,
                                         "managed": true
