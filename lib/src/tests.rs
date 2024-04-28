@@ -118,6 +118,7 @@ async fn wallet_derive_works() {
     assert_eq!(actual.encode()[101..], expected[101..]);
 }
 
+const RELAY_NODE_URL: &'static str = "wss://rpc.relay.canary.enjin.io:443";
 const NODE_URL: &'static str = "wss://rpc.matrix.canary.enjin.io:443";
 const GRAPHQL_URL: &'static str = "http://localhost:8000/graphql";
 const PLATFORM_AUTH_KEY: &'static str = "KEY";
@@ -147,6 +148,7 @@ async fn load_config_works() {
         config,
         Configuration::new(
             NODE_URL.to_string(),
+            RELAY_NODE_URL.to_string(),
             KEY_STORAGE.into(),
             GRAPHQL_URL.to_string()
         )
@@ -162,6 +164,7 @@ async fn load_config_default_works() {
         config,
         Configuration::new(
             NODE_URL.to_string(),
+            RELAY_NODE_URL.to_string(),
             KEY_STORAGE_DEFAULT.into(),
             GRAPHQL_URL.to_string()
         )
@@ -230,6 +233,7 @@ async fn jobs_work() {
     let (poll_job, sign_processor) = create_job_pair_with_executor(
         graphql_url,
         token,
+        String::from("matrix"),
         Duration::from_millis(6000),
         Arc::new(wallet_connection_pair),
         1000,
@@ -284,6 +288,7 @@ async fn jobs_work_twice() {
     let (poll_job, sign_processor) = create_job_pair_with_executor(
         graphql_url,
         token,
+        String::from("matrix"),
         Duration::from_millis(10),
         Arc::new(wallet_connection_pair),
         1000,
@@ -318,6 +323,7 @@ async fn jobs_work_trice() {
     let (poll_job, sign_processor) = create_job_pair_with_executor(
         graphql_url,
         token,
+        String::from("matrix"),
         Duration::from_millis(10),
         Arc::new(wallet_connection_pair),
         1000,
@@ -358,6 +364,7 @@ async fn connector_works() {
     let (poll_job, sign_processor) = create_job_pair_with_executor(
         graphql_url,
         token,
+        String::from("matrix"),
         Duration::from_millis(10),
         Arc::new(wallet_connection_pair),
         1000,
