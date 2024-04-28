@@ -67,7 +67,8 @@ type Query {
 }
 
 type Mutation {
-  MarkAndListPendingTransactions(after: String, first: Int): TransactionConnection
+
+  MarkAndListPendingTransactions(network: String, after: String, first: Int): TransactionConnection
 
   UpdateTransaction(
     id: Int!

@@ -51,7 +51,7 @@ pub(crate) use connection::{chain_connection, client_connection, connection_hand
 pub(crate) use types::{SignedExtra, UncheckedExtrinsic};
 
 pub use crate::wallet_trait::EfinityWallet;
-pub use config_loader::{load_config, load_wallet};
+pub use config_loader::{load_config, load_relay_wallet, load_wallet};
 pub use jobs::{
     create_job_pair, create_wallet_job_pair, DeriveWalletProcessor, PollJob, PollWalletJob,
     SignProcessor,

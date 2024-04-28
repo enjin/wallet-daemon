@@ -184,7 +184,6 @@ fn get_password(env_name: &str) -> SecretString {
     let password = SecretString::new(
         env::var(env_name).unwrap_or_else(|_| panic!("Password {} not loaded in memory", env_name)),
     );
-    env::remove_var(env_name);
     password
 }
 
@@ -222,6 +221,33 @@ where
 {
     let context_provider = Arc::new(Connector::<Client<T>, String, subxt::BasicError>::new(
         config.node.to_owned(),
+    ));
+    let connection = Arc::clone(&context_provider);
+
+    load_wallet_with_connections(config, context_provider, connection).await
+}
+
+pub async fn load_relay_wallet<T>(
+    config: Configuration,
+) -> (
+    WalletConnectionPair<T, ChainConnector<T>, ChainConnector<T>>,
+    String,
+    String,
+)
+where
+    T: subxt::Config + Sync + Send,
+    T::Signature: From<<Sr25519Pair as Pair>::Signature> + Verify + From<sp_core::ecdsa::Signature>,
+    <T::Signature as Verify>::Signer:
+        From<<Sr25519Pair as Pair>::Public> + IdentifyAccount<AccountId = T::AccountId>,
+    T::AccountId: Into<<T as subxt::Config>::Address>
+        + std::fmt::Display
+        + From<subxt::sp_runtime::AccountId32>,
+    T::Address: From<T::AccountId> + Send + Sync,
+    T::Extrinsic: Send,
+    T::BlockNumber: Into<u64>,
+{
+    let context_provider = Arc::new(Connector::<Client<T>, String, subxt::BasicError>::new(
+        config.relay_node.to_owned(),
     ));
     let connection = Arc::clone(&context_provider);
 

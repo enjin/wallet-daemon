@@ -334,6 +334,8 @@ pub struct PollJob<Client> {
     url: Arc<String>,
     /// Static token for authorization
     token: Arc<String>,
+    ///
+    network: Arc<String>,
     /// Page size(pagination)
     limit: i64,
 }
@@ -343,6 +345,7 @@ pub struct PollJob<Client> {
 pub fn create_job_pair<T>(
     graphql_endpoint: String,
     token: String,
+    network: String,
     delay: Duration,
     wallet_connection_pair: Arc<WalletConnectionPair<T, ChainConnector<T>, ChainConnector<T>>>,
     page_size: i64,
@@ -364,6 +367,7 @@ pub fn create_job_pair<T>(
     create_job_pair_with_executor(
         graphql_endpoint,
         token,
+        network,
         delay,
         wallet_connection_pair,
         page_size,
@@ -375,6 +379,7 @@ pub fn create_job_pair<T>(
 pub(crate) fn create_job_pair_with_executor<T, Client, ChainConnection, ContextProvider>(
     graphql_endpoint: String,
     token: String,
+    network: String,
     delay: Duration,
     wallet_connection_pair: Arc<WalletConnectionPair<T, ChainConnection, ContextProvider>>,
     page_size: i64,
@@ -413,9 +418,12 @@ pub(crate) fn create_job_pair_with_executor<T, Client, ChainConnection, ContextP
     let (tx, rx) = tokio::sync::mpsc::channel(50_000);
     let graphql_endpoint = Arc::new(graphql_endpoint);
     let token = Arc::new(token);
+    let network = Arc::new(network);
+
     let poll_job = PollJob::new(
         Arc::clone(&graphql_endpoint),
         Arc::clone(&token),
+        Arc::clone(&network),
         delay,
         tx,
         client.clone(),
@@ -441,8 +449,10 @@ where
 {
     #[cfg(not(tarpaulin_include))]
     fn build_request(&self, limit: Option<i64>) -> Request {
+        let network = &*self.network;
         let request_body = MarkAndListPendingTransactions::build_query(
             mark_and_list_pending_transactions::Variables {
+                network: Some(network.clone().to_string()),
                 after: None,
                 first: limit,
             },
@@ -460,6 +470,7 @@ where
     pub fn new(
         url: Arc<String>,
         token: Arc<String>,
+        network: Arc<String>,
         delay: Duration,
         tx: Sender<Vec<SignRequest>>,
         client: Arc<reqwest::Client>,
@@ -473,6 +484,7 @@ where
             tx,
             url,
             token,
+            network,
             limit,
         }
     }
@@ -1169,8 +1181,8 @@ where
             let transaction = transaction.clone();
             let wallet = &wallet_connection_pair.wallet;
 
-            /// This can be improved by making the daemon process the transactions in sequence
-            /// Since it process in parallel and we can have a transaction that deletes the account
+            // This can be improved by making the daemon process the transactions in sequence
+            // Since it process in parallel and we can have a transaction that deletes the account
             Self::reset_wallet_nonce(wallet, &external_id).await;
 
             let connection = &wallet_connection_pair.connection;
@@ -1288,7 +1300,7 @@ for SignRequest
             .encoded_data
             .split('x')
             .nth(1)
-            .ok_or("No '0x' at the beggining")?;
+            .ok_or("No '0x' at the beginning")?;
         let transaction = hex::decode(data).map_err(|e| {
             tracing::error!("Error decoding: {:?}", e);
             e
@@ -1350,12 +1362,13 @@ pub struct PaginationInput {
 ///
 /// ## The query (Can be found in the `query_path`)
 /// ```ignore
-/// mutation MarkAndListPendingTransactions($after: String, $first: Int) {
-///     MarkAndListPendingTransactions(after: $after, first: $first) {
+/// mutation MarkAndListPendingTransactions($network: String, $after: String, $first: Int) {
+///     MarkAndListPendingTransactions(network: $network, after: $after, first: $first) {
 ///         edges {
 ///             node {
-///                 encodedData
 ///                 id
+///                 encodedData
+///                 network
 ///                 wallet {
 ///                     externalId
 ///                     managed
@@ -1373,7 +1386,7 @@ pub struct PaginationInput {
 )]
 pub struct MarkAndListPendingTransactions;
 
-/// GraphQL mutation to submit the received txHash.
+/// GraphQL's mutation to submit the received txHash.
 ///
 /// ## The query
 /// ```ignore
@@ -1395,7 +1408,7 @@ pub struct MarkAndListPendingTransactions;
 )]
 pub struct UpdateTransaction;
 
-/// GraphQL mutation to submit the received txHash.
+/// GraphQL's mutation to submit the received txHash.
 ///
 /// ## The query
 /// ```ignore
