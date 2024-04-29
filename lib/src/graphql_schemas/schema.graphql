@@ -17,6 +17,7 @@ type Transaction {
   transactionHash: String
   wallet: Wallet
   encodedData: String!
+  network: String!
 }
 
 type Account {
@@ -66,7 +67,8 @@ type Query {
 }
 
 type Mutation {
-  MarkAndListPendingTransactions(after: String, first: Int): TransactionConnection
+
+  MarkAndListPendingTransactions(network: String, after: String, first: Int): TransactionConnection
 
   UpdateTransaction(
     id: Int!

@@ -151,17 +151,31 @@ async fn main() {
     let (poll_job, sign_processor) = create_job_pair(
         graphql_endpoint.clone(),
         String::from(token.clone()),
+        String::from("matrix"),
         Duration::from_millis(POLL_TRANSACTION_MS),
         Arc::clone(&wallet_pair),
         TRANSACTION_PAGE_SIZE.try_into().unwrap(),
     );
 
     let (poll_wallet_job, derive_wallet_processor) = create_wallet_job_pair(
-        graphql_endpoint,
+        graphql_endpoint.clone(),
         String::from(token.clone()),
         Duration::from_millis(POLL_ACCOUNT_MS),
         Arc::clone(&wallet_pair),
         ACCOUNT_PAGE_SIZE.try_into().unwrap(),
+    );
+
+    let (relay_pair, graphql, auth) =
+        load_relay_wallet::<DefaultConfig>(load_config().clone()).await;
+    let relay_pair = Arc::new(relay_pair);
+
+    let (relay_poll_job, relay_sign_processor) = create_job_pair(
+        graphql.clone(),
+        String::from(auth.clone()),
+        String::from("relay"),
+        Duration::from_millis(POLL_TRANSACTION_MS),
+        Arc::clone(&relay_pair),
+        TRANSACTION_PAGE_SIZE.try_into().unwrap(),
     );
 
     poll_job.start_job();
@@ -169,6 +183,9 @@ async fn main() {
 
     poll_wallet_job.start_job();
     derive_wallet_processor.start_job();
+
+    relay_poll_job.start_job();
+    relay_sign_processor.start_job();
 
     signal::ctrl_c().await.expect("Failed to listen for ctrl c");
 }
