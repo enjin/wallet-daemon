@@ -135,7 +135,7 @@ impl<T: Config> SignedExtension for CheckTxVersion<T> {
 pub struct CheckMetadataHash<T: Config>(
     /// The default structure for the Extra encoding
     pub u8,
-    /// Local genesis hash to be used for `AdditionalSigned`
+    /// Metadata hash to be used for `AdditionalSigned`
     #[codec(skip)]
     pub Option<T::Hash>,
 );
