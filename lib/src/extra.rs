@@ -123,6 +123,43 @@ impl<T: Config> SignedExtension for CheckTxVersion<T> {
     }
 }
 
+/// Check metadata hash
+#[derive(Derivative, Encode, Decode, TypeInfo)]
+#[derivative(
+    Clone(bound = ""),
+    PartialEq(bound = ""),
+    Debug(bound = ""),
+    Eq(bound = "")
+)]
+#[scale_info(skip_type_params(T))]
+pub struct CheckMetadataHash<T: Config>(
+    /// The default structure for the Extra encoding
+    pub u8,
+    /// Local genesis hash to be used for `AdditionalSigned`
+    #[codec(skip)]
+    pub Option<T::Hash>,
+);
+
+impl<T: Config> SignedExtension for crate::extra::CheckMetadataHash<T> {
+    const IDENTIFIER: &'static str = "CheckMetadataHash";
+    type AccountId = T::AccountId;
+    type Call = ();
+    type AdditionalSigned = Option<T::Hash>;
+    type Pre = ();
+    fn additional_signed(&self) -> Result<Self::AdditionalSigned, TransactionValidityError> {
+        Ok(None)
+    }
+    fn pre_dispatch(
+        self,
+        _who: &Self::AccountId,
+        _call: &Self::Call,
+        _info: &DispatchInfoOf<Self::Call>,
+        _len: usize,
+    ) -> Result<Self::Pre, TransactionValidityError> {
+        Ok(())
+    }
+}
+
 /// Check genesis hash
 ///
 /// # Note
@@ -361,6 +398,7 @@ pub struct DefaultExtraWithTxPayment<T: Config, X> {
     current: u64,
     period: u64,
     block_hash: T::Hash,
+    metadata_hash: u8,
 }
 
 impl<T, X> SignedExtra<T> for DefaultExtraWithTxPayment<T, X>
@@ -376,6 +414,7 @@ where
         CheckMortality<T>,
         CheckNonce<T>,
         CheckWeight<T>,
+        CheckMetadataHash<T>,
         X,
     );
 
@@ -397,6 +436,7 @@ where
             current,
             period,
             block_hash,
+            metadata_hash: 0,
         }
     }
 
@@ -423,6 +463,7 @@ where
             ),
             CheckNonce(self.nonce),
             CheckWeight(PhantomDataSendSync::new()),
+            CheckMetadataHash(0, None),
             X::default(),
         )
     }
