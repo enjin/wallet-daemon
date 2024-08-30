@@ -1,6 +1,6 @@
 {
-  "node": "wss://rpc.matrix.canary.enjin.io:443",
+  "node": "ws://127.0.0.1:43295",
   "relay_node": "wss://rpc.relay.canary.enjin.io:443",
-  "api": "https://platform.canary.enjin.io/graphql",
+  "api": "http://127.0.0.1:8000/graphql",
   "master_key": "store"
 }

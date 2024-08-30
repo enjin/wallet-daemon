@@ -1,7 +1,0 @@
-.github
-.git
-.env
-target/
-store/
-config.json
-config-test.json

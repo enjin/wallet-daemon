@@ -6,6 +6,7 @@ schema {
 enum TransactionState {
   PENDING
   BROADCAST
+  EXECUTED
   ABANDONED
   FINALIZED
 }
@@ -68,7 +69,7 @@ type Query {
 
 type Mutation {
 
-  MarkAndListPendingTransactions(network: String, after: String, first: Int): TransactionConnection
+  MarkAndListPendingTransactions(network: String, after: String, first: Int, markAsProcessing: Boolean): TransactionConnection
 
   UpdateTransaction(
     id: Int!
@@ -80,6 +81,10 @@ type Mutation {
 
   SetWalletAccount(
     id: Int!
+    account: String!
+  ): Boolean!
+
+  UpdateUser(
     account: String!
   ): Boolean!
 }

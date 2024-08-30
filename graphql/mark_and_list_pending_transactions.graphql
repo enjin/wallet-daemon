@@ -1,8 +1,9 @@
-mutation MarkAndListPendingTransactions($network: String, $after: String, $first: Int) {
+mutation MarkAndListPendingTransactions($network: String, $after: String, $first: Int, $markAsProcessing: Boolean) {
   MarkAndListPendingTransactions(
     network: $network
     after: $after
     first: $first
+    markAsProcessing: $markAsProcessing
   ) {
     edges {
       cursor

@@ -1,6 +1,1 @@
-.idea/
-.cargo/
-target/
-node_modules
-build/
-.store/
+/target
