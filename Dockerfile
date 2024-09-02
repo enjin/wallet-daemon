@@ -12,7 +12,7 @@ COPY graphql graphql
 COPY Cargo.lock Cargo.lock
 COPY Cargo.toml Cargo.toml
 
-RUN cargo build
+RUN cargo build --release
 
 # ===== SECOND STAGE ======
 
