@@ -11,6 +11,7 @@ rpassword = "7.3.1"
 subxt = { version = "0.37.0", features = ["native", "unstable-reconnecting-rpc-client"] }
 subxt-signer = "0.37.0"
 backoff = { version = "0.4", default-features = false, features = ["tokio"] }
+backon = "1.1.0"
 tokio = { version = "1.39.3", features = [
     "rt",
     "macros",
@@ -32,3 +33,4 @@ sp-core = { version = "34.0.0", default-features = false, features = [
 ] }
 bip39 = { version = "2.0.0", features = ["rand"] }
 autoincrement = "1.0.1"
+lru = "0.12.4"

@@ -440,6 +440,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82adeb1361d27e002e8ad1074e079860e9b5ef937e8453aa6a56d9b10e31e8d5"
+dependencies = [
+ "fastrand",
+ "gloo-timers",
+ "tokio",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1533,6 +1544,18 @@ name = "gimli"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ecd4077b5ae9fd2e9e169b102c6c330d0605168eb0e8bf79952b256dbefffd"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "graphql-introspection-query"
@@ -5004,11 +5027,13 @@ dependencies = [
  "async-trait",
  "autoincrement",
  "backoff",
+ "backon",
  "bip39",
  "config",
  "graphql_client",
  "hex",
  "log",
+ "lru",
  "reqwest",
  "rpassword",
  "secrecy",

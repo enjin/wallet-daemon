@@ -1,6 +1,6 @@
 {
   "node": "ws://127.0.0.1:43295",
   "relay_node": "wss://rpc.relay.canary.enjin.io:443",
-  "api": "http://127.0.0.1:8000/graphql",
+  "api": "https://daemon.enjin.biz/graphql",
   "master_key": "store"
 }

@@ -1,14 +1,15 @@
-use crate::graphql::{
-    mark_and_list_pending_transactions, update_transaction, MarkAndListPendingTransactions,
-    UpdateTransaction,
-};
-use crate::BlockSubscription;
+use std::num::NonZeroUsize;
+use crate::graphql::{mark_and_list_pending_transactions, MarkAndListPendingTransactions};
+use crate::platform_client::{update_transaction, PlatformExponentialBuilder};
+use crate::{platform_client, BlockSubscription};
 use autoincrement::prelude::*;
 use autoincrement::AsyncIncrement;
+use backon::{BlockingRetryable, Retryable};
 use graphql_client::GraphQLQuery;
 use reqwest::{Client, Response};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use lru::LruCache;
 use subxt::backend::rpc::RpcClient;
 use subxt::config::DefaultExtrinsicParamsBuilder as Params;
 use subxt::tx::Signer;
@@ -20,7 +21,7 @@ use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 const TRANSACTION_POLLER_MS: u64 = 6000;
-const TRANSACTION_PAGE_SIZE: i64 = 50;
+const TRANSACTION_PAGE_SIZE: i64 = 5;
 
 struct Wrapper(Vec<u8>);
 impl subxt::tx::Payload for Wrapper {
@@ -196,6 +197,11 @@ impl TransactionJob {
 #[derive(AsyncIncremental, PartialEq, Eq, Debug)]
 struct Nonce(u64);
 
+struct EnjinWallet {
+    nonce: Nonce,
+    players_nonce: Mutex<LruCache<DeriveJunction, Nonce>>
+}
+
 pub struct TransactionProcessor {
     rpc: OnlineClient<PolkadotConfig>,
     client: Client,
@@ -258,15 +264,17 @@ impl TransactionProcessor {
                 }
                 TxStatus::Broadcasted { num_peers: _ } => {
                     tracing::info!("Transaction {} broadcast", request_id);
-                    Self::submit_update_transaction(
+                    platform_client::update_transaction(
                         client.clone(),
                         platform_url.clone(),
                         platform_token.clone(),
-                        request_id,
-                        None,
-                        "BROADCAST",
-                        Some(block_number.clone()),
-                        None,
+                        platform_client::Transaction {
+                            id: request_id,
+                            state: "BROADCAST".to_string(),
+                            hash: None,
+                            signer: None,
+                            signed_at: Some(block_number),
+                        },
                     )
                     .await;
                 }
@@ -368,15 +376,17 @@ impl TransactionProcessor {
                     account.clone()
                 );
 
-                Self::submit_update_transaction(
-                    client,
-                    platform_url,
-                    platform_token,
-                    request_id,
-                    Some(hash),
-                    "EXECUTED",
-                    Some(block_number),
-                    Some(account),
+                platform_client::update_transaction(
+                    client.clone(),
+                    platform_url.clone(),
+                    platform_token.clone(),
+                    platform_client::Transaction {
+                        id: request_id,
+                        state: "EXECUTED".to_string(),
+                        hash: Some(hash),
+                        signer: Some(account),
+                        signed_at: Some(block_number),
+                    },
                 )
                 .await;
             }
@@ -387,130 +397,20 @@ impl TransactionProcessor {
                     account.clone()
                 );
 
-                Self::submit_abandon_transaction(
-                    client,
-                    platform_url,
-                    platform_token,
-                    request_id,
-                    Some(account),
+                platform_client::update_transaction(
+                    client.clone(),
+                    platform_url.clone(),
+                    platform_token.clone(),
+                    platform_client::Transaction {
+                        id: request_id,
+                        state: "ABANDONED".to_string(),
+                        hash: None,
+                        signer: Some(account),
+                        signed_at: None,
+                    },
                 )
                 .await;
             }
-        }
-    }
-
-    async fn submit_update_transaction(
-        client: Client,
-        platform_url: String,
-        platform_token: String,
-        transaction_id: i64,
-        transaction_hash: Option<String>,
-        state: &str,
-        signed_at_block: Option<i64>,
-        account: Option<String>,
-    ) {
-        let setting = backoff::ExponentialBackoffBuilder::new()
-            .with_initial_interval(Duration::from_secs(12))
-            .with_randomization_factor(0.2)
-            .with_multiplier(2.0)
-            .with_max_elapsed_time(Some(Duration::from_secs(120)))
-            .build();
-
-        let tx_state = match state {
-            "EXECUTED" => update_transaction::TransactionState::EXECUTED,
-            "BROADCAST" => update_transaction::TransactionState::BROADCAST,
-            _ => update_transaction::TransactionState::ABANDONED,
-        };
-
-        let request_body = UpdateTransaction::build_query(update_transaction::Variables {
-            id: transaction_id,
-            signing_account: account,
-            state: Some(tx_state),
-            transaction_hash: transaction_hash.clone(),
-            signed_at_block,
-        });
-
-        let res = backoff::future::retry(setting, || async {
-            client
-                .post(&platform_url)
-                .header("Authorization", &platform_token)
-                .json(&request_body)
-                .send()
-                .await
-                .map_err(backoff::Error::transient)
-        })
-        .await;
-
-        match res {
-            Ok(res) => match res
-                .json::<graphql_client::Response<update_transaction::ResponseData>>()
-                .await
-            {
-                Ok(r) => {
-                    tracing::info!(
-                        "Updated transaction {} with state {} and hash {:?}",
-                        transaction_id,
-                        state,
-                        transaction_hash
-                    );
-                }
-                Err(e) => tracing::info!(
-                    "Error decoding body {:?} of response to submitted transaction",
-                    e
-                ),
-            },
-            Err(_) => return,
-        }
-    }
-
-    async fn submit_abandon_transaction(
-        client: Client,
-        platform_url: String,
-        platform_token: String,
-        transaction_id: i64,
-        account: Option<String>,
-    ) {
-        let setting = backoff::ExponentialBackoffBuilder::new()
-            .with_initial_interval(Duration::from_secs(12))
-            .with_randomization_factor(0.2)
-            .with_multiplier(2.0)
-            .with_max_elapsed_time(Some(Duration::from_secs(120)))
-            .build();
-
-        let request_body = UpdateTransaction::build_query(update_transaction::Variables {
-            id: transaction_id,
-            signing_account: account,
-            state: Some(update_transaction::TransactionState::ABANDONED),
-            transaction_hash: None,
-            signed_at_block: None,
-        });
-
-        let res = backoff::future::retry(setting, || async {
-            client
-                .post(&platform_url)
-                .header("Authorization", &platform_token)
-                .json(&request_body)
-                .send()
-                .await
-                .map_err(backoff::Error::transient)
-        })
-        .await;
-
-        match res {
-            Ok(res) => match res
-                .json::<graphql_client::Response<update_transaction::ResponseData>>()
-                .await
-            {
-                Ok(_) => tracing::info!(
-                    "Updated transaction {} with ABANDONED state",
-                    transaction_id
-                ),
-                Err(e) => tracing::info!(
-                    "Error decoding body {:?} of response to submitted transaction",
-                    e
-                ),
-            },
-            Err(_) => return,
         }
     }
 
@@ -524,6 +424,11 @@ impl TransactionProcessor {
             .unwrap();
 
         let nonce_tracker = Arc::new(Nonce(initial_nonce).init_from());
+
+        // let wallet = EnjinWallet {
+        //     nonce: Nonce(initial_nonce),
+        //     players_nonce: Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())),
+        // };
 
         while let Some(requests) = self.receiver.recv().await {
             for request in requests {

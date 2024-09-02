@@ -1,6 +1,7 @@
 use crate::graphql::{
     get_pending_wallets, set_wallet_account, GetPendingWallets, SetWalletAccount,
 };
+use crate::platform_client;
 use graphql_client::GraphQLQuery;
 use log::trace;
 use reqwest::{Client, Response};
@@ -190,56 +191,6 @@ impl DeriveWalletProcessor {
         }
     }
 
-    async fn submit_wallet_account(
-        client: Client,
-        platform_url: String,
-        platform_token: String,
-        wallet_id: i64,
-        external_id: String,
-        account: String,
-    ) {
-        let setting = backoff::ExponentialBackoffBuilder::new()
-            .with_initial_interval(Duration::from_secs(12))
-            .with_randomization_factor(0.2)
-            .with_multiplier(2.0)
-            .with_max_elapsed_time(Some(Duration::from_secs(120)))
-            .build();
-
-        let request_body = SetWalletAccount::build_query(set_wallet_account::Variables {
-            id: wallet_id,
-            account: account.clone(),
-        });
-
-        let res = backoff::future::retry(setting, || async {
-            client
-                .post(&platform_url)
-                .header("Authorization", &platform_token)
-                .json(&request_body)
-                .send()
-                .await
-                .map_err(backoff::Error::transient)
-        })
-        .await;
-
-        match res {
-            Ok(res) => match res
-                .json::<graphql_client::Response<set_wallet_account::ResponseData>>()
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!(
-                        "Updated wallet {wallet_id} (externalId: {external_id}) to {account}"
-                    )
-                }
-                Err(e) => tracing::info!(
-                    "Error decoding body {:?} of response to submitted account",
-                    e
-                ),
-            },
-            Err(_) => return,
-        }
-    }
-
     async fn derive_wallet(
         client: Client,
         keypair: Keypair,
@@ -254,7 +205,7 @@ impl DeriveWalletProcessor {
     ) {
         let derived_pair = keypair.derive([DeriveJunction::soft(external_id.clone())]);
         let derived_key = hex::encode(derived_pair.public_key().0);
-        Self::submit_wallet_account(
+        platform_client::set_wallet_account(
             client,
             platform_url,
             platform_token,
