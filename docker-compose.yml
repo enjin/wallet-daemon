@@ -1,0 +1,14 @@
+version: '3.9'
+
+services:
+  daemon:
+    image: enjin/wallet-daemon:latest
+    build:
+      context: .
+      args:
+        DOCKER_BUILDKIT: 1
+    env_file:
+      - .env
+    volumes:
+      - ./config.json:/opt/app/config.json
+      - ./store:/opt/app/storage
