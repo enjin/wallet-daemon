@@ -39,7 +39,7 @@ RUN rm -rf /var/lib/apt/lists/*
 FROM runner
 
 COPY --chmod=0755 ./scripts/start.sh /usr/local/bin
-COPY --chmod=0755 --from=builder /wallet/target/release/wallet /usr/local/bin
+COPY --chmod=0755 --from=builder /wallet/target/release/wallet-daemon-new /usr/local/bin/wallet
 
 RUN dos2unix /usr/local/bin/start.sh
 
