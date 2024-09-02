@@ -7,8 +7,7 @@ WORKDIR /wallet
 
 # We are copying only the files we need for building
 # As any changes in other files will make the multi-stage build useless
-COPY bin bin
-COPY lib lib
+COPY src src
 COPY Cargo.lock Cargo.lock
 COPY Cargo.toml Cargo.toml
 
