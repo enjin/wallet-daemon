@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing_subscriber::fmt::init();
 
-    set_multitenant(signing).await;
+    set_multitenant(signing, platform_url.clone(), platform_token.clone()).await;
 
     let reconnect = Client::builder()
         .retry_policy(
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .max_delay(Duration::from_secs(10))
                 .take(3),
         )
-        .build("wss://rpc.matrix.canary.enjin.io".to_string())
+        .build(matrix_url.clone())
         .await
         .unwrap();
 

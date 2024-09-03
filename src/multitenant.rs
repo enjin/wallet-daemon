@@ -10,10 +10,12 @@ struct Platform {
     packages: HashMap<String, Value>,
 }
 
-async fn get_packages() -> Result<bool, Box<dyn std::error::Error>> {
+async fn get_packages(platform_url: String, platform_token: String) -> Result<bool, Box<dyn std::error::Error>> {
+    let platform = platform_url.replace("/graphql", "");
+
     let client = Client::new();
     let res = client
-        .get("https://platform.canary.enjin.io/.well-known/enjin-platform.json")
+        .get(format!("{platform}/.well-known/enjin-platform.json"))
         .send()
         .await?;
     let platform = res.json::<Platform>().await?;
@@ -23,16 +25,16 @@ async fn get_packages() -> Result<bool, Box<dyn std::error::Error>> {
         .contains_key("enjin/platform-multi-tenant"))
 }
 
-async fn update_user(account: String) -> Result<bool, Box<dyn std::error::Error>> {
+async fn update_user(account: String, platform_url: String, platform_token: String) -> Result<bool, Box<dyn std::error::Error>> {
     let request_body =
         graphql::UpdateUser::build_query(graphql::update_user::Variables { account });
 
     let client = reqwest::Client::new();
     let res = client
-        .post("https://platform.canary.enjin.io/graphql/multi-tenant")
+        .post(format!("{platform_url}/multi-tenant"))
         .header(
             "Authorization",
-            "6ZyLaVnIrHUxBTz7vPye3g0mxhvuumrEx7oqbe0w6d07a3a2",
+            platform_token,
         )
         .json(&request_body)
         .send()
@@ -44,13 +46,13 @@ async fn update_user(account: String) -> Result<bool, Box<dyn std::error::Error>
     Ok(data.update_user)
 }
 
-pub async fn set_multitenant(account: String) {
-    let is_tenant = get_packages()
+pub async fn set_multitenant(account: String, platform_url: String, platform_token: String) {
+    let is_tenant = get_packages(platform_url.clone(), platform_token.clone())
         .await
         .expect("We could not connect to Enjin Platform, check your connection or the url");
 
     if is_tenant {
-        let updated = update_user(account)
+        let updated = update_user(account, platform_url, platform_token)
             .await
             .expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 
