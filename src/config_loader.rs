@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use config::Config;
 use secrecy::ExposeSecret;
 use serde::Deserialize;
@@ -107,16 +110,14 @@ pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, Str
     let public_key = signer.public_key().0;
     let account_id = sp_core::crypto::AccountId32::from(public_key);
 
-    println!("*** Enjin Wallet Daemon - Loaded Wallet");
-    println!(
-        "* Enjin Matrixchain  (SS58): {}",
-        account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
-    );
-    println!(
-        "* Canary Matrixchain (SS58): {}",
-        account_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030))
-    );
-    println!("* Public Key          (Hex): 0x{}", hex::encode(public_key));
+    println!("********** Enjin Wallet Daemon v2.0.0 - Loaded Wallet **********");
+    println!("** Enjin Matrixchain  (SS58): {}", account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110)));
+    println!("** Canary Matrixchain (SS58): {}", account_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030)));
+    println!("** Public Key          (Hex): 0x{}", hex::encode(public_key));
+    println!("** Matrixchain RPC          : {}", config.node);
+    println!("** Relaychain RPC           : {}", config.relay_node);
+    println!("** Platform URL             : {}", config.api);
+    println!("*****************************************************************");
 
     (
         signer,

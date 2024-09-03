@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use std::num::NonZeroUsize;
 use crate::graphql::{mark_and_list_pending_transactions, MarkAndListPendingTransactions};
 use crate::platform_client::{update_transaction, PlatformExponentialBuilder};
@@ -258,12 +261,16 @@ impl TransactionProcessor {
 
         while let Some(status) = transaction.next().await {
             match status? {
-                TxStatus::Validated => {}
+                TxStatus::Validated => {
+                    let trimmed = trim_account(hex::encode(keypair.public_key().0));
+                    tracing::info!("Sent transaction #{} with nonce {} signed by {}", request_id, nonce, trimmed);
+
+                }
                 TxStatus::Invalid { message } => {
-                    tracing::error!("Transaction {} invalid: {:?}", request_id, message);
+                    tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
                 }
                 TxStatus::Broadcasted { num_peers: _ } => {
-                    tracing::info!("Transaction {} broadcast", request_id);
+                    tracing::info!("Transaction #{} has been BROADCASTED", request_id);
                     platform_client::update_transaction(
                         client.clone(),
                         platform_url.clone(),
@@ -280,31 +287,31 @@ impl TransactionProcessor {
                 }
                 TxStatus::InBestBlock(block) => {
                     tracing::info!(
-                        "Transaction {} in best block: {:?}",
+                        "Transaction #{} is now InBestBlock: {:?}",
                         request_id,
                         block.block_hash()
                     );
                     return Ok(hex::encode(block.extrinsic_hash().0));
                 }
                 TxStatus::NoLongerInBestBlock => {
-                    tracing::error!("Transaction {} no longer in best block", request_id)
+                    tracing::error!("Transaction #{} no longer InBestBlock", request_id)
                 }
                 TxStatus::Dropped { message } => {
-                    tracing::error!("Transaction {} dropped: {:?}", request_id, message)
+                    tracing::error!("Transaction #{} has been DROPPED: {:?}", request_id, message)
                 }
                 TxStatus::InFinalizedBlock(in_block) => tracing::info!(
-                    "Transaction {} with hash {:?} included in block: {:?}",
+                    "Transaction #{} with hash {:?} was included at block: {:?}",
                     request_id,
                     in_block.extrinsic_hash(),
                     in_block.block_hash()
                 ),
                 TxStatus::Error { message } => {
-                    tracing::error!("Transaction {} error: {:?}", request_id, message)
+                    tracing::error!("Transaction #{} has an ERROR: {:?}", request_id, message)
                 }
             }
         }
 
-        Err("Transaction failed".into())
+        Err("Transaction #{} could not be signed or sent".into())
     }
 
     async fn transaction_handler(
@@ -367,13 +374,14 @@ impl TransactionProcessor {
 
         match res {
             Ok(hash) => {
-                let hash = format!("0x{hash}");
+                let trimmed_hash = trim_account(hash.clone());
+                let trimmed_account = trim_account(account.clone());
 
                 tracing::info!(
-                    "Transaction {} hash {} signed with account {}",
+                    "Transaction #{} hash {} signed with account {} setting it to EXECUTED",
                     request_id,
-                    hash.clone(),
-                    account.clone()
+                    trimmed_hash,
+                    trimmed_account
                 );
 
                 platform_client::update_transaction(
@@ -391,10 +399,10 @@ impl TransactionProcessor {
                 .await;
             }
             Err(e) => {
-                tracing::info!(
-                    "Transaction {} failed to sign with account {} being ABANDONED",
+                tracing::warn!(
+                    "Transaction #{} failed to sign with account {} setting it to ABANDONED",
                     request_id,
-                    account.clone()
+                    trim_account(account.clone())
                 );
 
                 platform_client::update_transaction(
@@ -424,6 +432,7 @@ impl TransactionProcessor {
             .unwrap();
 
         let nonce_tracker = Arc::new(Nonce(initial_nonce).init_from());
+        tracing::info!("Setting initial nonce to {} for account {}", initial_nonce, trim_account(hex::encode(self.keypair.public_key().0)));
 
         // let wallet = EnjinWallet {
         //     nonce: Nonce(initial_nonce),
@@ -432,7 +441,7 @@ impl TransactionProcessor {
 
         while let Some(requests) = self.receiver.recv().await {
             for request in requests {
-                tracing::info!("Received transaction request: {:?}", request.request_id);
+                tracing::info!("Received transaction request: #{}", request.request_id);
                 tokio::spawn(Self::transaction_handler(
                     self.rpc.clone(),
                     self.client.clone(),
@@ -450,4 +459,8 @@ impl TransactionProcessor {
     pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(self.launch_job_scheduler())
     }
+}
+
+fn trim_account(account: String) -> String {
+    format!("0x{}...{}", &account[..4], &account[60..])
 }

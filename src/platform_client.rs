@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use crate::graphql::{set_wallet_account, update_transaction, SetWalletAccount, UpdateTransaction};
 use backon::{BlockingRetryable, ExponentialBuilder, Retryable};
 use graphql_client::GraphQLQuery;
@@ -30,7 +33,7 @@ pub async fn update_transaction(
     platform_token: String,
     transaction: Transaction,
 ) {
-    let state = match transaction.state.as_str() {
+    let transaction_state = match transaction.state.as_str() {
         "EXECUTED" => update_transaction::TransactionState::EXECUTED,
         "BROADCAST" => update_transaction::TransactionState::BROADCAST,
         _ => update_transaction::TransactionState::ABANDONED,
@@ -38,7 +41,7 @@ pub async fn update_transaction(
 
     let request_body = UpdateTransaction::build_query(update_transaction::Variables {
         id: transaction.id,
-        state: Some(state),
+        state: Some(transaction_state),
         transaction_hash: transaction.hash,
         signing_account: transaction.signer,
         signed_at_block: transaction.signed_at,
@@ -61,15 +64,16 @@ pub async fn update_transaction(
             .await
         {
             Ok(_) => tracing::info!(
-                "Updated transaction {} with ABANDONED state",
-                transaction.id
+                "Updated transaction #{} with state: {}",
+                transaction.id,
+                transaction.state,
             ),
             Err(e) => tracing::error!(
-                "Error decoding body {:?} of response to submitted transaction",
+                "Error decoding response of the platform: {:?}",
                 e
             ),
         },
-        Err(e) => tracing::error!("Error sending request to update transaction: {:?}", e),
+        Err(e) => tracing::error!("Error sending UpdateTransaction: {:?}", e),
     }
 }
 

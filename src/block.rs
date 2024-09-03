@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use std::sync::{Arc, Mutex};
 use subxt::{OnlineClient, PolkadotConfig};
 use tokio::task::JoinHandle;

@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use crate::graphql::{
     get_pending_wallets, set_wallet_account, GetPendingWallets, SetWalletAccount,
 };

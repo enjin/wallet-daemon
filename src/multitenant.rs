@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use crate::graphql;
 use graphql_client::{GraphQLQuery, Response};
 use reqwest::Client;
@@ -52,12 +55,14 @@ pub async fn set_multitenant(account: String, platform_url: String, platform_tok
         .expect("We could not connect to Enjin Platform, check your connection or the url");
 
     if is_tenant {
-        let updated = update_user(account, platform_url, platform_token)
+        let updated = update_user(account.clone(), platform_url.clone(), platform_token)
             .await
             .expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 
+        let trimmed_url = platform_url.trim_end_matches("/graphql").replace("https://", "");
+        let trimmed_account = format!("0x{}...{}", &account[..4], &account[60..]);
         println!(
-            "** Your account at Enjin Platform has been updated with your wallet daemon address"
+            "** (MultiTenant) Wallet at {trimmed_url} set to: {trimmed_account}"
         );
 
         if !updated {
