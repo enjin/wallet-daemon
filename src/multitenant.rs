@@ -13,7 +13,10 @@ struct Platform {
     packages: HashMap<String, Value>,
 }
 
-async fn get_packages(platform_url: String, platform_token: String) -> Result<bool, Box<dyn std::error::Error>> {
+async fn get_packages(
+    platform_url: String,
+    platform_token: String,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let platform = platform_url.replace("/graphql", "");
 
     let client = Client::new();
@@ -28,17 +31,18 @@ async fn get_packages(platform_url: String, platform_token: String) -> Result<bo
         .contains_key("enjin/platform-multi-tenant"))
 }
 
-async fn update_user(account: String, platform_url: String, platform_token: String) -> Result<bool, Box<dyn std::error::Error>> {
+async fn update_user(
+    account: String,
+    platform_url: String,
+    platform_token: String,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let request_body =
         graphql::UpdateUser::build_query(graphql::update_user::Variables { account });
 
     let client = reqwest::Client::new();
     let res = client
         .post(format!("{platform_url}/multi-tenant"))
-        .header(
-            "Authorization",
-            platform_token,
-        )
+        .header("Authorization", platform_token)
         .json(&request_body)
         .send()
         .await?;
@@ -59,11 +63,11 @@ pub async fn set_multitenant(account: String, platform_url: String, platform_tok
             .await
             .expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 
-        let trimmed_url = platform_url.trim_end_matches("/graphql").replace("https://", "");
+        let trimmed_url = platform_url
+            .trim_end_matches("/graphql")
+            .replace("https://", "");
         let trimmed_account = format!("0x{}...{}", &account[..4], &account[60..]);
-        println!(
-            "** (MultiTenant) Wallet at {trimmed_url} set to: {trimmed_account}"
-        );
+        println!("** (MultiTenant) Wallet at {trimmed_url} set to: {trimmed_account}");
 
         if !updated {
             panic!("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.")

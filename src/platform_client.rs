@@ -63,15 +63,15 @@ pub async fn update_transaction(
             .json::<graphql_client::Response<update_transaction::ResponseData>>()
             .await
         {
-            Ok(_) => tracing::info!(
-                "Updated transaction #{} with state: {}",
-                transaction.id,
-                transaction.state,
-            ),
-            Err(e) => tracing::error!(
-                "Error decoding response of the platform: {:?}",
-                e
-            ),
+            Ok(r) => {
+                tracing::info!("Response from platform: {:?}", r);
+                tracing::info!(
+                    "Updated transaction #{} with state: {}",
+                    transaction.id,
+                    transaction.state,
+                );
+            }
+            Err(e) => tracing::error!("Error decoding response of the platform: {:?}", e),
         },
         Err(e) => tracing::error!("Error sending UpdateTransaction: {:?}", e),
     }
@@ -106,9 +106,12 @@ pub async fn set_wallet_account(
             .json::<graphql_client::Response<set_wallet_account::ResponseData>>()
             .await
         {
-            Ok(_) => tracing::info!(
-                "Updated wallet {wallet_id} (externalId: {external_id}) to {account}"
-            ),
+            Ok(r) => {
+                tracing::info!("Response from platform: {:?}", r);
+                tracing::info!(
+                    "Updated wallet {wallet_id} (externalId: {external_id}) to {account}"
+                );
+            }
             Err(e) => tracing::error!(
                 "Error decoding body {:?} of response to submitted account",
                 e

@@ -71,13 +71,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     transaction_poller.start();
     transaction_processor.start();
 
-    //
-    // // let (wallet_poller, wallet_processor) =
-    // //     DeriveWalletJob::create_job(keypair, platform_url, platform_token);
-    //
+    let (wallet_poller, wallet_processor) =
+        DeriveWalletJob::create_job(keypair, platform_url, platform_token);
 
-    // wallet_poller.start();
-    // wallet_processor.start();
+    wallet_poller.start();
+    wallet_processor.start();
 
     signal::ctrl_c().await.expect("Failed to listen for ctrl c");
 

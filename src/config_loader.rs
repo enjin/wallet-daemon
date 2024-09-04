@@ -111,9 +111,18 @@ pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, Str
     let account_id = sp_core::crypto::AccountId32::from(public_key);
 
     println!("********** Enjin Wallet Daemon v2.0.0 - Loaded Wallet **********");
-    println!("** Enjin Matrixchain  (SS58): {}", account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110)));
-    println!("** Canary Matrixchain (SS58): {}", account_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030)));
-    println!("** Public Key          (Hex): 0x{}", hex::encode(public_key));
+    println!(
+        "** Enjin Matrixchain  (SS58): {}",
+        account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
+    );
+    println!(
+        "** Canary Matrixchain (SS58): {}",
+        account_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030))
+    );
+    println!(
+        "** Public Key          (Hex): 0x{}",
+        hex::encode(public_key)
+    );
     println!("** Matrixchain RPC          : {}", config.node);
     println!("** Relaychain RPC           : {}", config.relay_node);
     println!("** Platform URL             : {}", config.api);

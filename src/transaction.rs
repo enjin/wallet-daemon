@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
-use std::num::NonZeroUsize;
 use crate::graphql::{mark_and_list_pending_transactions, MarkAndListPendingTransactions};
 use crate::platform_client::{update_transaction, PlatformExponentialBuilder};
 use crate::{platform_client, BlockSubscription};
@@ -9,10 +8,11 @@ use autoincrement::prelude::*;
 use autoincrement::AsyncIncrement;
 use backon::{BlockingRetryable, Retryable};
 use graphql_client::GraphQLQuery;
+use lru::LruCache;
 use reqwest::{Client, Response};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use lru::LruCache;
 use subxt::backend::rpc::RpcClient;
 use subxt::config::DefaultExtrinsicParamsBuilder as Params;
 use subxt::tx::Signer;
@@ -138,7 +138,7 @@ impl TransactionJob {
                     if e.to_string() == "Empty response body" {
                         tracing::info!("No pending transactions");
                     } else {
-                        tracing::info!("Error: {:?}", e);
+                        tracing::error!("Error: {:?}", e);
                     }
                 }
             }
@@ -175,6 +175,7 @@ impl TransactionJob {
         let response_body: graphql_client::Response<
             mark_and_list_pending_transactions::ResponseData,
         > = transactions_res.json().await?;
+
         let response_data = response_body.data.ok_or("No data in response")?;
         let transactions_req = response_data
             .mark_and_list_pending_transactions
@@ -187,7 +188,7 @@ impl TransactionJob {
                 p.and_then(|p| {
                     TransactionRequest::try_from(p)
                         .map_err(|e| {
-                            tracing::info!("Error: {:?}", e);
+                            tracing::error!("Error response: {:?}", e);
                             e
                         })
                         .ok()
@@ -202,7 +203,7 @@ struct Nonce(u64);
 
 struct EnjinWallet {
     nonce: Nonce,
-    players_nonce: Mutex<LruCache<DeriveJunction, Nonce>>
+    players_nonce: Mutex<LruCache<DeriveJunction, Nonce>>,
 }
 
 pub struct TransactionProcessor {
@@ -263,8 +264,12 @@ impl TransactionProcessor {
             match status? {
                 TxStatus::Validated => {
                     let trimmed = trim_account(hex::encode(keypair.public_key().0));
-                    tracing::info!("Sent transaction #{} with nonce {} signed by {}", request_id, nonce, trimmed);
-
+                    tracing::info!(
+                        "Sent transaction #{} with nonce {} signed by {}",
+                        request_id,
+                        nonce,
+                        trimmed
+                    );
                 }
                 TxStatus::Invalid { message } => {
                     tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
@@ -297,7 +302,11 @@ impl TransactionProcessor {
                     tracing::error!("Transaction #{} no longer InBestBlock", request_id)
                 }
                 TxStatus::Dropped { message } => {
-                    tracing::error!("Transaction #{} has been DROPPED: {:?}", request_id, message)
+                    tracing::error!(
+                        "Transaction #{} has been DROPPED: {:?}",
+                        request_id,
+                        message
+                    )
                 }
                 TxStatus::InFinalizedBlock(in_block) => tracing::info!(
                     "Transaction #{} with hash {:?} was included at block: {:?}",
@@ -391,7 +400,7 @@ impl TransactionProcessor {
                     platform_client::Transaction {
                         id: request_id,
                         state: "EXECUTED".to_string(),
-                        hash: Some(hash),
+                        hash: Some(format!("0x{}", hash)),
                         signer: Some(account),
                         signed_at: Some(block_number),
                     },
@@ -432,7 +441,11 @@ impl TransactionProcessor {
             .unwrap();
 
         let nonce_tracker = Arc::new(Nonce(initial_nonce).init_from());
-        tracing::info!("Setting initial nonce to {} for account {}", initial_nonce, trim_account(hex::encode(self.keypair.public_key().0)));
+        tracing::info!(
+            "Setting initial nonce to {} for account {}",
+            initial_nonce,
+            trim_account(hex::encode(self.keypair.public_key().0))
+        );
 
         // let wallet = EnjinWallet {
         //     nonce: Nonce(initial_nonce),
