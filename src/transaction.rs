@@ -12,8 +12,10 @@ use lru::LruCache;
 use reqwest::{Client, Response};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 use subxt::backend::rpc::RpcClient;
+use subxt::config::substrate::{BlakeTwo256, SubstrateHeader};
 use subxt::config::DefaultExtrinsicParamsBuilder as Params;
 use subxt::tx::Signer;
 use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
@@ -21,8 +23,10 @@ use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::time::interval;
+use tokio::time::{interval, sleep};
 
+const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
+const BLOCK_TIME_MS: u64 = 12000;
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 5;
 
@@ -87,7 +91,7 @@ impl TransactionJob {
     }
 
     pub fn create_job(
-        rpc: OnlineClient<PolkadotConfig>,
+        rpc: Arc<OnlineClient<PolkadotConfig>>,
         block_sub: Arc<BlockSubscription>,
         keypair: Keypair,
         platform_url: String,
@@ -135,8 +139,8 @@ impl TransactionJob {
                     }
                 }
                 Err(e) => {
-                    if e.to_string() == "Empty response body" {
-                        tracing::info!("No pending transactions");
+                    if e.to_string() == NO_TRANSACTIONS_MSG {
+                        tracing::info!("MarkAndListPendingTransactions: {}", NO_TRANSACTIONS_MSG);
                     } else {
                         tracing::error!("Error: {:?}", e);
                     }
@@ -176,19 +180,23 @@ impl TransactionJob {
             mark_and_list_pending_transactions::ResponseData,
         > = transactions_res.json().await?;
 
-        let response_data = response_body.data.ok_or("No data in response")?;
+        let response_data = response_body.data.ok_or(NO_TRANSACTIONS_MSG)?;
         let transactions_req = response_data
             .mark_and_list_pending_transactions
-            .ok_or("No transactions in response")?;
+            .ok_or(NO_TRANSACTIONS_MSG)?
+            .edges;
+
+        if (transactions_req.is_empty()) {
+            return Err(NO_TRANSACTIONS_MSG.into());
+        }
 
         Ok(transactions_req
-            .edges
             .into_iter()
             .filter_map(|p| {
                 p.and_then(|p| {
                     TransactionRequest::try_from(p)
                         .map_err(|e| {
-                            tracing::error!("Error response: {:?}", e);
+                            tracing::error!("Error creating TransactionRequest: {:?}", e);
                             e
                         })
                         .ok()
@@ -207,8 +215,8 @@ struct EnjinWallet {
 }
 
 pub struct TransactionProcessor {
-    rpc: OnlineClient<PolkadotConfig>,
-    client: Client,
+    chain_client: Arc<OnlineClient<PolkadotConfig>>,
+    platform_client: Client,
     block_sub: Arc<BlockSubscription>,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
@@ -218,7 +226,7 @@ pub struct TransactionProcessor {
 
 impl TransactionProcessor {
     pub(crate) fn new(
-        rpc: OnlineClient<PolkadotConfig>,
+        rpc: Arc<OnlineClient<PolkadotConfig>>,
         client: Client,
         block_sub: Arc<BlockSubscription>,
         keypair: Keypair,
@@ -227,8 +235,8 @@ impl TransactionProcessor {
         platform_token: String,
     ) -> Self {
         Self {
-            rpc,
-            client,
+            chain_client: rpc,
+            platform_client: client,
             block_sub,
             keypair,
             receiver,
@@ -238,19 +246,19 @@ impl TransactionProcessor {
     }
 
     async fn submit_and_watch(
-        client: Client,
+        platform_client: Client,
         platform_url: String,
         platform_token: String,
-        rpc: OnlineClient<PolkadotConfig>,
+        chain_client: Arc<OnlineClient<PolkadotConfig>>,
         keypair: Keypair,
         nonce: u64,
         request_id: i64,
         payload: Vec<u8>,
-        block_number: i64,
+        block_header: SubstrateHeader<u32, BlakeTwo256>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let params = Params::new().nonce(nonce).build();
+        let params = Params::new().nonce(nonce).mortal(&block_header, 32).build();
 
-        let mut transaction = rpc
+        let mut transaction = chain_client
             .tx()
             .create_signed(&Wrapper(payload), &keypair, params)
             .await?
@@ -277,7 +285,7 @@ impl TransactionProcessor {
                 TxStatus::Broadcasted { num_peers: _ } => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
                     platform_client::update_transaction(
-                        client.clone(),
+                        platform_client.clone(),
                         platform_url.clone(),
                         platform_token.clone(),
                         platform_client::Transaction {
@@ -285,7 +293,7 @@ impl TransactionProcessor {
                             state: "BROADCAST".to_string(),
                             hash: None,
                             signer: None,
-                            signed_at: Some(block_number),
+                            signed_at: Some(block_header.number as i64),
                         },
                     )
                     .await;
@@ -320,13 +328,13 @@ impl TransactionProcessor {
             }
         }
 
-        Err("Transaction #{} could not be signed or sent".into())
+        Err(format!("Transaction #{} could not be signed or sent", request_id).into())
     }
 
     async fn transaction_handler(
-        rpc: OnlineClient<PolkadotConfig>,
-        client: Client,
-        block_sub: Arc<BlockSubscription>,
+        chain_client: Arc<OnlineClient<PolkadotConfig>>,
+        platform_client: Client,
+        block_subscription: Arc<BlockSubscription>,
         keypair: Keypair,
         nonce: Arc<AsyncIncrement<Nonce>>,
         platform_url: String,
@@ -353,25 +361,32 @@ impl TransactionProcessor {
 
         let nonce_value = nonce.pull();
         let value = nonce_value.0.clone();
-        let block_number = block_sub.get_block_number() as i64;
+        let block_header = block_subscription.get_block_header();
 
         let res = backoff::future::retry(setting, || async {
             match Self::submit_and_watch(
-                client.clone(),
+                platform_client.clone(),
                 platform_url.clone(),
                 platform_token.clone(),
-                rpc.clone(),
+                Arc::clone(&chain_client),
                 signer.clone(),
                 value,
                 request_id,
                 payload.clone(),
-                block_number.clone(),
+                block_header.clone(),
             )
             .await
             {
                 Ok(hash) => Ok(hash),
                 Err(e) => {
-                    tracing::error!("Error submitting transaction: {:?}", e);
+                    tracing::error!(
+                        "Error submitting transaction #{} from account {} with nonce {}. Payload: 0x{}",
+                        request_id,
+                        trim_account(hex::encode(signer.public_key().0)),
+                        value,
+                        hex::encode(payload.clone())
+                    );
+                    tracing::error!("{:?}", e);
                     Err(backoff::Error::transient(e))
                 }
             }
@@ -394,7 +409,7 @@ impl TransactionProcessor {
                 );
 
                 platform_client::update_transaction(
-                    client.clone(),
+                    platform_client.clone(),
                     platform_url.clone(),
                     platform_token.clone(),
                     platform_client::Transaction {
@@ -402,7 +417,7 @@ impl TransactionProcessor {
                         state: "EXECUTED".to_string(),
                         hash: Some(format!("0x{}", hash)),
                         signer: Some(account),
-                        signed_at: Some(block_number),
+                        signed_at: Some(block_header.number as i64),
                     },
                 )
                 .await;
@@ -415,7 +430,7 @@ impl TransactionProcessor {
                 );
 
                 platform_client::update_transaction(
-                    client.clone(),
+                    platform_client.clone(),
                     platform_url.clone(),
                     platform_token.clone(),
                     platform_client::Transaction {
@@ -431,14 +446,25 @@ impl TransactionProcessor {
         }
     }
 
+    async fn get_initial_nonce(&self) -> u64 {
+        loop {
+            tracing::info!("Waiting for 2 blocks to get the initial nonce");
+            sleep(Duration::from_millis(BLOCK_TIME_MS)).await;
+
+            match self
+                .chain_client
+                .tx()
+                .account_nonce(&self.keypair.public_key().into())
+                .await
+            {
+                Ok(nonce) => return nonce,
+                Err(e) => tracing::error!("Error getting initial nonce, retrying: {:?}", e),
+            }
+        }
+    }
     async fn launch_job_scheduler(mut self) {
         // TODO: Change this as we can have many accounts that can have diff nonces
-        let initial_nonce = self
-            .rpc
-            .tx()
-            .account_nonce(&self.keypair.public_key().into())
-            .await
-            .unwrap();
+        let initial_nonce = self.get_initial_nonce().await;
 
         let nonce_tracker = Arc::new(Nonce(initial_nonce).init_from());
         tracing::info!(
@@ -454,10 +480,15 @@ impl TransactionProcessor {
 
         while let Some(requests) = self.receiver.recv().await {
             for request in requests {
+                if request.external_id.is_some() {
+                    tracing::info!("Received transaction request: #{} for external_id {} but we are ignoring it for now", request.request_id, request.external_id.unwrap());
+                    continue;
+                }
+
                 tracing::info!("Received transaction request: #{}", request.request_id);
                 tokio::spawn(Self::transaction_handler(
-                    self.rpc.clone(),
-                    self.client.clone(),
+                    Arc::clone(&self.chain_client),
+                    self.platform_client.clone(),
                     self.block_sub.clone(),
                     self.keypair.clone(),
                     Arc::clone(&nonce_tracker),

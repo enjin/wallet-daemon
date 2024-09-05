@@ -2,21 +2,24 @@
 #![allow(unused)]
 
 use std::sync::{Arc, Mutex};
+use subxt::ext::subxt_core;
 use subxt::{OnlineClient, PolkadotConfig};
+use subxt_core::config::substrate;
 use tokio::task::JoinHandle;
 
 #[derive(Debug)]
 pub struct BlockSubscription {
-    rpc: OnlineClient<PolkadotConfig>,
-    block_number: Arc<Mutex<u32>>,
+    rpc: Arc<OnlineClient<PolkadotConfig>>,
+    block_header: Arc<Mutex<Option<substrate::SubstrateHeader<u32, substrate::BlakeTwo256>>>>,
 }
 
 impl BlockSubscription {
-    pub fn new(rpc: OnlineClient<PolkadotConfig>) -> Arc<Self> {
-        let block_number = Arc::new(Mutex::new(0));
+    pub fn new(rpc: Arc<OnlineClient<PolkadotConfig>>) -> Arc<Self> {
+        let block_header = Arc::new(Mutex::new(None));
+
         let subscription = Arc::new(Self {
             rpc,
-            block_number: Arc::clone(&block_number),
+            block_header: Arc::clone(&block_header),
         });
         let subscription_clone = Arc::clone(&subscription);
 
@@ -35,7 +38,7 @@ impl BlockSubscription {
                 Ok(b) => b,
                 Err(e) => {
                     if e.is_disconnected_will_reconnect() {
-                        tracing::warn!("Reconnecting to the RPC");
+                        tracing::warn!("Lost connection with the RPC node, reconnecting...");
                         continue;
                     }
 
@@ -43,20 +46,22 @@ impl BlockSubscription {
                 }
             };
 
-            let block_number = block.number();
-            let block_hash = block.hash();
+            tracing::info!(
+                "Current finalized block #{}: {}",
+                block.number(),
+                block.hash()
+            );
 
-            tracing::info!("Block #{block_number}: {block_hash}");
-
-            let mut block_number_lock = self.block_number.lock().unwrap();
-            *block_number_lock = block_number;
+            let mut block_header = self.block_header.lock().unwrap();
+            *block_header = Some(block.header().clone());
         }
 
         Ok(())
     }
 
-    pub fn get_block_number(&self) -> u32 {
-        let block_number_lock = self.block_number.lock().unwrap();
-        *block_number_lock
+    pub fn get_block_header(&self) -> substrate::SubstrateHeader<u32, substrate::BlakeTwo256> {
+        let block_header_lock = self.block_header.lock().unwrap();
+
+        block_header_lock.clone().unwrap()
     }
 }
