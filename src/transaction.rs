@@ -14,11 +14,14 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use backoff::exponential::ExponentialBackoff;
+use backoff::SystemClock;
 use subxt::backend::rpc::RpcClient;
 use subxt::config::substrate::{BlakeTwo256, SubstrateHeader};
 use subxt::config::DefaultExtrinsicParamsBuilder as Params;
 use subxt::tx::Signer;
 use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
+use subxt::ext::codec::Encode;
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -53,6 +56,7 @@ impl TryFrom<mark_and_list_pending_transactions::MarkAndListPendingTransactionsM
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn try_from(edge: mark_and_list_pending_transactions::MarkAndListPendingTransactionsMarkAndListPendingTransactionsEdges) -> Result<Self, Self::Error> {
+        tracing::info!("{:?}", edge);
         let external_id = edge.node.wallet.as_ref().and_then(|w| w.external_id.clone());
 
         Ok(Self {
@@ -205,14 +209,14 @@ impl TransactionJob {
             .collect())
     }
 }
-
-#[derive(AsyncIncremental, PartialEq, Eq, Debug)]
-struct Nonce(u64);
-
-struct EnjinWallet {
-    nonce: Nonce,
-    players_nonce: Mutex<LruCache<DeriveJunction, Nonce>>,
-}
+//
+// #[derive(AsyncIncremental, PartialEq, Eq, Debug)]
+// struct Nonce(u64);
+//
+// struct EnjinWallet {
+//     nonce: Nonce,
+//     players_nonce: Mutex<LruCache<DeriveJunction, Nonce>>,
+// }
 
 pub struct TransactionProcessor {
     chain_client: Arc<OnlineClient<PolkadotConfig>>,
@@ -251,13 +255,28 @@ impl TransactionProcessor {
         platform_token: String,
         chain_client: Arc<OnlineClient<PolkadotConfig>>,
         keypair: Keypair,
-        nonce: u64,
+        nonce: Arc<Mutex<u64>>,
         request_id: i64,
         payload: Vec<u8>,
         block_header: SubstrateHeader<u32, BlakeTwo256>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let params = Params::new().nonce(nonce).mortal(&block_header, 32).build();
+        // Let's correct the nonce here
+        let chain_nonce = chain_client.tx().account_nonce(&keypair.public_key().into()).await.unwrap();
+        let correct_nonce;
+        {
+            let mut latest_nonce = nonce.lock().unwrap();
+            correct_nonce = latest_nonce.max(chain_nonce);
 
+            tracing::warn!("Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
+
+            *latest_nonce = correct_nonce + 1;
+        }
+
+
+
+        let params = Params::new().nonce(correct_nonce).mortal(&block_header, 16).build();
+
+        // We probably need to try to create the tx (to check if it is valid before grabbing a nonce for it
         let mut transaction = chain_client
             .tx()
             .create_signed(&Wrapper(payload), &keypair, params)
@@ -265,22 +284,23 @@ impl TransactionProcessor {
             .submit_and_watch()
             .await?;
 
-        // TODO: There is a bug in the platform where we can pass the hash twice
-        // let hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
+        // let encoded_tx = hex::encode(&transaction.);
+        // let mut sub = tx.submit_and_watch().await?;
 
         while let Some(status) = transaction.next().await {
             match status? {
                 TxStatus::Validated => {
                     let trimmed = trim_account(hex::encode(keypair.public_key().0));
                     tracing::info!(
-                        "Sent transaction #{} with nonce {} signed by {}",
-                        request_id,
-                        nonce,
-                        trimmed
-                    );
+                            "Sent transaction #{} with nonce {} signed by {}",
+                            request_id,
+                            correct_nonce,
+                            trimmed
+                        );
                 }
                 TxStatus::Invalid { message } => {
                     tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
+                    // tracing::error!("Full transaction: {}", encoded_tx);
                 }
                 TxStatus::Broadcasted { num_peers: _ } => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
@@ -296,14 +316,14 @@ impl TransactionProcessor {
                             signed_at: Some(block_header.number as i64),
                         },
                     )
-                    .await;
+                        .await;
                 }
                 TxStatus::InBestBlock(block) => {
                     tracing::info!(
-                        "Transaction #{} is now InBestBlock: {:?}",
-                        request_id,
-                        block.block_hash()
-                    );
+                            "Transaction #{} is now InBestBlock: {:?}",
+                            request_id,
+                            block.block_hash()
+                        );
                     return Ok(hex::encode(block.extrinsic_hash().0));
                 }
                 TxStatus::NoLongerInBestBlock => {
@@ -311,23 +331,25 @@ impl TransactionProcessor {
                 }
                 TxStatus::Dropped { message } => {
                     tracing::error!(
-                        "Transaction #{} has been DROPPED: {:?}",
-                        request_id,
-                        message
-                    )
+                            "Transaction #{} has been DROPPED: {:?}",
+                            request_id,
+                            message
+                        )
                 }
                 TxStatus::InFinalizedBlock(in_block) => tracing::info!(
-                    "Transaction #{} with hash {:?} was included at block: {:?}",
-                    request_id,
-                    in_block.extrinsic_hash(),
-                    in_block.block_hash()
-                ),
+                        "Transaction #{} with hash {:?} was included at block: {:?}",
+                        request_id,
+                        in_block.extrinsic_hash(),
+                        in_block.block_hash()
+                    ),
                 TxStatus::Error { message } => {
                     tracing::error!("Transaction #{} has an ERROR: {:?}", request_id, message)
                 }
             }
         }
 
+        // TODO: There is a bug in the platform where we can pass the hash twice
+        // let hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
         Err(format!("Transaction #{} could not be signed or sent", request_id).into())
     }
 
@@ -336,7 +358,7 @@ impl TransactionProcessor {
         platform_client: Client,
         block_subscription: Arc<BlockSubscription>,
         keypair: Keypair,
-        nonce: Arc<AsyncIncrement<Nonce>>,
+        nonce: Arc<Mutex<u64>>,
         platform_url: String,
         platform_token: String,
         TransactionRequest {
@@ -346,31 +368,26 @@ impl TransactionProcessor {
             payload,
         }: TransactionRequest,
     ) {
-        let setting = backoff::ExponentialBackoffBuilder::new()
-            .with_initial_interval(Duration::from_secs(6))
-            .with_randomization_factor(0.2)
-            .with_multiplier(2.0)
-            .with_max_elapsed_time(Some(Duration::from_secs(120)))
-            .build();
-
         let signer = if external_id.is_some() {
             keypair.derive([DeriveJunction::soft(external_id)])
         } else {
             keypair
         };
 
-        let nonce_value = nonce.pull();
-        let value = nonce_value.0.clone();
+        // let nonce_value = nonce.pull();
+        // let value = nonce_value.0.clone();
+        // let value = 0;
         let block_header = block_subscription.get_block_header();
+        // tracing::info!("Pulling nonce {} for transaction {}", value, request_id);
 
-        let res = backoff::future::retry(setting, || async {
+        let res = backoff::future::retry(Self::default_backoff(), || async {
             match Self::submit_and_watch(
                 platform_client.clone(),
                 platform_url.clone(),
                 platform_token.clone(),
                 Arc::clone(&chain_client),
                 signer.clone(),
-                value,
+                Arc::clone(&nonce),
                 request_id,
                 payload.clone(),
                 block_header.clone(),
@@ -379,11 +396,20 @@ impl TransactionProcessor {
             {
                 Ok(hash) => Ok(hash),
                 Err(e) => {
+                    // Few possible errors
+                    // ServerError(1010) - Invalid Transaction - Transaction is outdated
+                    // ServerError(1012) - Transaction is temporally banned
+                    // ServerError(1013) - Transaction already imported
+                    // ServerError(1014) - Priority is too low
+                    // We will reset the nonce if any error occurs
+                    let mut nonce = nonce.lock().unwrap();
+                    *nonce = 0;
+
+                    tracing::info!("Resetting cache nonce: 0");
                     tracing::error!(
-                        "Error submitting transaction #{} from account {} with nonce {}. Payload: 0x{}",
+                        "Error submitting transaction #{} from account {} payload: 0x{}",
                         request_id,
                         trim_account(hex::encode(signer.public_key().0)),
-                        value,
                         hex::encode(payload.clone())
                     );
                     tracing::error!("{:?}", e);
@@ -446,6 +472,16 @@ impl TransactionProcessor {
         }
     }
 
+    fn default_backoff() -> ExponentialBackoff<SystemClock> {
+        let setting = backoff::ExponentialBackoffBuilder::new()
+            .with_initial_interval(Duration::from_secs(6))
+            .with_randomization_factor(0.2)
+            .with_multiplier(2.0)
+            .with_max_elapsed_time(Some(Duration::from_secs(120)))
+            .build();
+        setting
+    }
+
     async fn get_initial_nonce(&self) -> u64 {
         loop {
             tracing::info!("Waiting for 2 blocks to get the initial nonce");
@@ -465,8 +501,8 @@ impl TransactionProcessor {
     async fn launch_job_scheduler(mut self) {
         // TODO: Change this as we can have many accounts that can have diff nonces
         let initial_nonce = self.get_initial_nonce().await;
+        let nonce_tracker = Arc::new(Mutex::new(initial_nonce));
 
-        let nonce_tracker = Arc::new(Nonce(initial_nonce).init_from());
         tracing::info!(
             "Setting initial nonce to {} for account {}",
             initial_nonce,
