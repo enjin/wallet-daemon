@@ -374,14 +374,12 @@ impl TransactionProcessor {
         }: TransactionRequest,
     ) {
         let signer = if external_id.is_some() {
-            keypair.derive([DeriveJunction::soft(external_id)])
+            keypair.derive([DeriveJunction::soft(external_id.unwrap())])
         } else {
             keypair
         };
 
         let block_header = block_subscription.get_block_header();
-        // tracing::info!("Pulling nonce {} for transaction {}", value, request_id);
-
         let res = backoff::future::retry(Self::default_backoff(), || async {
             match Self::submit_and_watch(
                 platform_client.clone(),
@@ -513,11 +511,6 @@ impl TransactionProcessor {
 
         while let Some(requests) = self.receiver.recv().await {
             for request in requests {
-                if request.external_id.is_some() {
-                    tracing::info!("Received transaction request: #{} for external_id {} but we are ignoring it for now", request.request_id, request.external_id.unwrap());
-                    continue;
-                }
-
                 tracing::info!("Received transaction request: #{}", request.request_id);
                 tokio::spawn(Self::transaction_handler(
                     Arc::clone(&self.chain_client),
