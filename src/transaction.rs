@@ -255,23 +255,26 @@ impl TransactionProcessor {
         platform_token: String,
         chain_client: Arc<OnlineClient<PolkadotConfig>>,
         keypair: Keypair,
-        nonce: Arc<Mutex<u64>>,
+        nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         request_id: i64,
         payload: Vec<u8>,
         block_header: SubstrateHeader<u32, BlakeTwo256>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         // Let's correct the nonce here
+        let public_key = hex::encode(&keypair.public_key().0);
         let chain_nonce = chain_client.tx().account_nonce(&keypair.public_key().into()).await.unwrap();
-        let correct_nonce;
+        let correct_nonce: u64;
         {
-            let mut latest_nonce = nonce.lock().unwrap();
-            correct_nonce = latest_nonce.max(chain_nonce);
+            let mut tracker = nonce_tracker.lock().unwrap();
 
-            tracing::warn!("Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
+            let latest_nonce = tracker.get(&public_key).unwrap_or(&0u64);
+            correct_nonce = *latest_nonce.max(&chain_nonce);
 
-            *latest_nonce = correct_nonce + 1;
+            let acc_format = trim_account(public_key.clone());
+            tracing::warn!("Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
+
+            tracker.put(public_key.clone(), correct_nonce + 1);
         }
-
 
 
         let params = Params::new().nonce(correct_nonce).mortal(&block_header, 16).build();
@@ -304,6 +307,8 @@ impl TransactionProcessor {
                 }
                 TxStatus::Broadcasted { num_peers: _ } => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
+                    let tx_hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
+
                     platform_client::update_transaction(
                         platform_client.clone(),
                         platform_url.clone(),
@@ -311,7 +316,7 @@ impl TransactionProcessor {
                         platform_client::Transaction {
                             id: request_id,
                             state: "BROADCAST".to_string(),
-                            hash: None,
+                            hash: Some(tx_hash),
                             signer: None,
                             signed_at: Some(block_header.number as i64),
                         },
@@ -358,7 +363,7 @@ impl TransactionProcessor {
         platform_client: Client,
         block_subscription: Arc<BlockSubscription>,
         keypair: Keypair,
-        nonce: Arc<Mutex<u64>>,
+        nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         platform_url: String,
         platform_token: String,
         TransactionRequest {
@@ -374,9 +379,6 @@ impl TransactionProcessor {
             keypair
         };
 
-        // let nonce_value = nonce.pull();
-        // let value = nonce_value.0.clone();
-        // let value = 0;
         let block_header = block_subscription.get_block_header();
         // tracing::info!("Pulling nonce {} for transaction {}", value, request_id);
 
@@ -387,7 +389,7 @@ impl TransactionProcessor {
                 platform_token.clone(),
                 Arc::clone(&chain_client),
                 signer.clone(),
-                Arc::clone(&nonce),
+                Arc::clone(&nonce_tracker),
                 request_id,
                 payload.clone(),
                 block_header.clone(),
@@ -402,10 +404,9 @@ impl TransactionProcessor {
                     // ServerError(1013) - Transaction already imported
                     // ServerError(1014) - Priority is too low
                     // We will reset the nonce if any error occurs
-                    let mut nonce = nonce.lock().unwrap();
-                    *nonce = 0;
+                    nonce_tracker.lock().unwrap().put(hex::encode(signer.public_key().0), 0);
 
-                    tracing::info!("Resetting cache nonce: 0");
+                    tracing::info!("Resetting cached nonce from {} to 0", hex::encode(signer.public_key().0));
                     tracing::error!(
                         "Error submitting transaction #{} from account {} payload: 0x{}",
                         request_id,
@@ -449,7 +450,7 @@ impl TransactionProcessor {
                 .await;
             }
             Err(e) => {
-                tracing::warn!(
+                tracing::error!(
                     "Transaction #{} failed to sign with account {} setting it to ABANDONED",
                     request_id,
                     trim_account(account.clone())
@@ -499,20 +500,16 @@ impl TransactionProcessor {
         }
     }
     async fn launch_job_scheduler(mut self) {
-        // TODO: Change this as we can have many accounts that can have diff nonces
-        let initial_nonce = self.get_initial_nonce().await;
-        let nonce_tracker = Arc::new(Mutex::new(initial_nonce));
+        let nonce_tracker: Arc<Mutex<LruCache<String, u64>>> = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
 
-        tracing::info!(
-            "Setting initial nonce to {} for account {}",
-            initial_nonce,
-            trim_account(hex::encode(self.keypair.public_key().0))
-        );
+        tracing::info!("Waiting for 2 blocks to get correct initial nonce");
+        sleep(Duration::from_millis(BLOCK_TIME_MS * 2)).await;
 
-        // let wallet = EnjinWallet {
-        //     nonce: Nonce(initial_nonce),
-        //     players_nonce: Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())),
-        // };
+        // tracing::info!(
+        //     "Setting initial nonce to {} for account {}",
+        //     initial_nonce,
+        //     trim_account(hex::encode(self.keypair.public_key().0))
+        // );
 
         while let Some(requests) = self.receiver.recv().await {
             for request in requests {
