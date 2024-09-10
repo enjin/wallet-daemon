@@ -69,11 +69,13 @@ async fn get_keys(key_store_path: &Path, password: SecretString) -> Keypair {
             }
 
             let content = fs::read_to_string(entry.path()).expect("Unable to read file");
+            let strip_content = content.strip_suffix("\r\n").or(content.strip_suffix("\n")).unwrap_or(&*content).to_string();
             let secret = format!(
                 "{}///{}",
-                content.replace("\"", ""),
+                strip_content.replace("\"", ""),
                 password.expose_secret()
             );
+
             let uri = SecretUri::from_str(&secret).expect("valid URI");
             let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
 
