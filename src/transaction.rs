@@ -31,7 +31,7 @@ use tokio::time::{interval, sleep};
 const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const BLOCK_TIME_MS: u64 = 12000;
 const TRANSACTION_POLLER_MS: u64 = 6000;
-const TRANSACTION_PAGE_SIZE: i64 = 5;
+const TRANSACTION_PAGE_SIZE: i64 = 25;
 
 struct Wrapper(Vec<u8>);
 impl subxt::tx::Payload for Wrapper {
@@ -374,7 +374,7 @@ impl TransactionProcessor {
         }: TransactionRequest,
     ) {
         let signer = if external_id.is_some() {
-            keypair.derive([DeriveJunction::soft(external_id.unwrap())])
+            keypair.derive([DeriveJunction::hard(external_id.unwrap())])
         } else {
             keypair
         };
