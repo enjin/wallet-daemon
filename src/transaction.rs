@@ -18,7 +18,7 @@ use backoff::exponential::ExponentialBackoff;
 use backoff::SystemClock;
 use subxt::backend::rpc::RpcClient;
 use subxt::config::substrate::{BlakeTwo256, SubstrateHeader};
-use subxt::config::DefaultExtrinsicParamsBuilder as Params;
+use subxt::config::{DefaultExtrinsicParamsBuilder as Params, Header};
 use subxt::tx::Signer;
 use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
 use subxt::ext::codec::Encode;
@@ -280,16 +280,23 @@ impl TransactionProcessor {
         let params = Params::new().nonce(correct_nonce).mortal(&block_header, 16).build();
 
         // We probably need to try to create the tx (to check if it is valid before grabbing a nonce for it
-        let mut transaction = chain_client
+        let signed_tx = chain_client
             .tx()
             .create_signed(&Wrapper(payload), &keypair, params)
-            .await?
-            .submit_and_watch()
             .await?;
 
-        // let encoded_tx = hex::encode(&transaction.);
-        // let mut sub = tx.submit_and_watch().await?;
+        let encoded_tx = hex::encode(&signed_tx.encoded());
+        tracing::info!("Request: #{} - Nonce: {} - BlockNumber: #{} - BlockHash: 0x{} - SpecVersion: {} - TxVersion: {} - Extrinsic: 0x{}",
+            request_id,
+            correct_nonce,
+            block_header.number,
+            hex::encode(block_header.hash().0),
+            chain_client.runtime_version().spec_version,
+            chain_client.runtime_version().transaction_version,
+            encoded_tx
+        );
 
+        let mut transaction = signed_tx.submit_and_watch().await?;
         while let Some(status) = transaction.next().await {
             match status? {
                 TxStatus::Validated => {

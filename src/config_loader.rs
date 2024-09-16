@@ -107,12 +107,13 @@ async fn get_keys(key_store_path: &Path, password: SecretString) -> Keypair {
 }
 
 pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, String, String) {
+    let version = env!("CARGO_PKG_VERSION");
     let password = get_password(KEY_PASS);
     let signer = get_keys(&config.master_key, password).await;
     let public_key = signer.public_key().0;
     let account_id = sp_core::crypto::AccountId32::from(public_key);
 
-    println!("********** Enjin Wallet Daemon v2.0.0 - Loaded Wallet **********");
+    println!("******************* Enjin Wallet Daemon v{version} *******************");
     println!(
         "** Enjin Matrixchain  (SS58): {}",
         account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
