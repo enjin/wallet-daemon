@@ -381,10 +381,16 @@ impl TransactionProcessor {
         }: TransactionRequest,
     ) {
         let signer = if external_id.is_some() {
-            keypair.derive([DeriveJunction::hard(external_id.unwrap())])
+            keypair.derive([DeriveJunction::soft(external_id.unwrap())])
         } else {
             keypair
         };
+
+        tracing::info!(
+            "Signing transaction #{} with account {}",
+            request_id,
+            hex::encode(signer.public_key().0)
+        );
 
         let block_header = block_subscription.get_block_header();
         let res = backoff::future::retry(Self::default_backoff(), || async {
