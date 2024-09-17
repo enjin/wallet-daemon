@@ -11,4 +11,4 @@ services:
       - .env
     volumes:
       - ./config.json:/opt/app/config.json
-      - ./store:/opt/app/storage
+      - ./store:/wallet/store
