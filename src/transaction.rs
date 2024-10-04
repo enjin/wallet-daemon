@@ -276,8 +276,7 @@ impl TransactionProcessor {
             tracker.put(public_key.clone(), correct_nonce + 1);
         }
 
-
-        let params = Params::new().nonce(correct_nonce).mortal(&block_header, 16).build();
+        let params = Params::new().nonce(correct_nonce).mortal(&block_header, 64).build();
 
         // We probably need to try to create the tx (to check if it is valid before grabbing a nonce for it
         let signed_tx = chain_client
@@ -286,11 +285,12 @@ impl TransactionProcessor {
             .await?;
 
         let encoded_tx = hex::encode(&signed_tx.encoded());
-        tracing::info!("Request: #{} - Nonce: {} - BlockNumber: #{} - BlockHash: 0x{} - SpecVersion: {} - TxVersion: {} - Extrinsic: 0x{}",
+        tracing::info!("Request: #{} - Nonce: {} - Mortality: 64 - BlockNumber: #{} - BlockHash: 0x{} - Genesis: 0x{} - SpecVersion: {} - TxVersion: {} - Extrinsic: 0x{}",
             request_id,
             correct_nonce,
             block_header.number,
             hex::encode(block_header.hash().0),
+            hex::encode(chain_client.genesis_hash().0),
             chain_client.runtime_version().spec_version,
             chain_client.runtime_version().transaction_version,
             encoded_tx
