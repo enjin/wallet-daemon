@@ -6,6 +6,8 @@ use crate::platform_client::{update_transaction, PlatformExponentialBuilder};
 use crate::{platform_client, BlockSubscription};
 use autoincrement::prelude::*;
 use autoincrement::AsyncIncrement;
+use backoff::exponential::ExponentialBackoff;
+use backoff::SystemClock;
 use backon::{BlockingRetryable, Retryable};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
@@ -14,14 +16,12 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use backoff::exponential::ExponentialBackoff;
-use backoff::SystemClock;
 use subxt::backend::rpc::RpcClient;
 use subxt::config::substrate::{BlakeTwo256, SubstrateHeader};
 use subxt::config::{DefaultExtrinsicParamsBuilder as Params, Header};
+use subxt::ext::codec::Encode;
 use subxt::tx::Signer;
 use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
-use subxt::ext::codec::Encode;
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -262,7 +262,11 @@ impl TransactionProcessor {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         // Let's correct the nonce here
         let public_key = hex::encode(&keypair.public_key().0);
-        let chain_nonce = chain_client.tx().account_nonce(&keypair.public_key().into()).await.unwrap();
+        let chain_nonce = chain_client
+            .tx()
+            .account_nonce(&keypair.public_key().into())
+            .await
+            .unwrap();
         let correct_nonce: u64;
         {
             let mut tracker = nonce_tracker.lock().unwrap();
@@ -276,7 +280,10 @@ impl TransactionProcessor {
             tracker.put(public_key.clone(), correct_nonce + 1);
         }
 
-        let params = Params::new().nonce(correct_nonce).mortal(&block_header, 64).build();
+        let params = Params::new()
+            .nonce(correct_nonce)
+            .mortal(&block_header, 64)
+            .build();
 
         // We probably need to try to create the tx (to check if it is valid before grabbing a nonce for it
         let signed_tx = chain_client
@@ -302,11 +309,11 @@ impl TransactionProcessor {
                 TxStatus::Validated => {
                     let trimmed = trim_account(hex::encode(keypair.public_key().0));
                     tracing::info!(
-                            "Sent transaction #{} with nonce {} signed by {}",
-                            request_id,
-                            correct_nonce,
-                            trimmed
-                        );
+                        "Sent transaction #{} with nonce {} signed by {}",
+                        request_id,
+                        correct_nonce,
+                        trimmed
+                    );
                 }
                 TxStatus::Invalid { message } => {
                     tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
@@ -328,14 +335,14 @@ impl TransactionProcessor {
                             signed_at: Some(block_header.number as i64),
                         },
                     )
-                        .await;
+                    .await;
                 }
                 TxStatus::InBestBlock(block) => {
                     tracing::info!(
-                            "Transaction #{} is now InBestBlock: {:?}",
-                            request_id,
-                            block.block_hash()
-                        );
+                        "Transaction #{} is now InBestBlock: {:?}",
+                        request_id,
+                        block.block_hash()
+                    );
                     return Ok(hex::encode(block.extrinsic_hash().0));
                 }
                 TxStatus::NoLongerInBestBlock => {
@@ -343,17 +350,17 @@ impl TransactionProcessor {
                 }
                 TxStatus::Dropped { message } => {
                     tracing::error!(
-                            "Transaction #{} has been DROPPED: {:?}",
-                            request_id,
-                            message
-                        )
+                        "Transaction #{} has been DROPPED: {:?}",
+                        request_id,
+                        message
+                    )
                 }
                 TxStatus::InFinalizedBlock(in_block) => tracing::info!(
-                        "Transaction #{} with hash {:?} was included at block: {:?}",
-                        request_id,
-                        in_block.extrinsic_hash(),
-                        in_block.block_hash()
-                    ),
+                    "Transaction #{} with hash {:?} was included at block: {:?}",
+                    request_id,
+                    in_block.extrinsic_hash(),
+                    in_block.block_hash()
+                ),
                 TxStatus::Error { message } => {
                     tracing::error!("Transaction #{} has an ERROR: {:?}", request_id, message)
                 }
@@ -415,9 +422,15 @@ impl TransactionProcessor {
                     // ServerError(1013) - Transaction already imported
                     // ServerError(1014) - Priority is too low
                     // We will reset the nonce if any error occurs
-                    nonce_tracker.lock().unwrap().put(hex::encode(signer.public_key().0), 0);
+                    nonce_tracker
+                        .lock()
+                        .unwrap()
+                        .put(hex::encode(signer.public_key().0), 0);
 
-                    tracing::info!("Resetting cached nonce from {} to 0", hex::encode(signer.public_key().0));
+                    tracing::info!(
+                        "Resetting cached nonce from {} to 0",
+                        hex::encode(signer.public_key().0)
+                    );
                     tracing::error!(
                         "Error submitting transaction #{} from account {} payload: 0x{}",
                         request_id,
@@ -511,7 +524,8 @@ impl TransactionProcessor {
         }
     }
     async fn launch_job_scheduler(mut self) {
-        let nonce_tracker: Arc<Mutex<LruCache<String, u64>>> = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
+        let nonce_tracker: Arc<Mutex<LruCache<String, u64>>> =
+            Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
 
         tracing::info!("Waiting for 2 blocks to get correct initial nonce");
         sleep(Duration::from_millis(BLOCK_TIME_MS * 2)).await;
