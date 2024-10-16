@@ -1,6 +1,8 @@
-.idea/
-.cargo/
+debug/
 target/
-node_modules
-build/
-.store/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+.idea
+.vscode
+.cargo
