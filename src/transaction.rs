@@ -3,7 +3,7 @@
 
 use crate::graphql::{mark_and_list_pending_transactions, MarkAndListPendingTransactions};
 use crate::platform_client::{update_transaction, PlatformExponentialBuilder};
-use crate::{platform_client, BlockSubscription};
+use crate::{platform_client, SubscriptionParams};
 use autoincrement::prelude::*;
 use autoincrement::AsyncIncrement;
 use backoff::exponential::ExponentialBackoff;
@@ -96,7 +96,7 @@ impl TransactionJob {
 
     pub fn create_job(
         rpc: Arc<OnlineClient<PolkadotConfig>>,
-        block_sub: Arc<BlockSubscription>,
+        block_sub: Arc<SubscriptionParams>,
         keypair: Keypair,
         platform_url: String,
         platform_token: String,
@@ -221,7 +221,7 @@ impl TransactionJob {
 pub struct TransactionProcessor {
     chain_client: Arc<OnlineClient<PolkadotConfig>>,
     platform_client: Client,
-    block_sub: Arc<BlockSubscription>,
+    block_sub: Arc<SubscriptionParams>,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
     platform_url: String,
@@ -232,7 +232,7 @@ impl TransactionProcessor {
     pub(crate) fn new(
         rpc: Arc<OnlineClient<PolkadotConfig>>,
         client: Client,
-        block_sub: Arc<BlockSubscription>,
+        block_sub: Arc<SubscriptionParams>,
         keypair: Keypair,
         receiver: Receiver<Vec<TransactionRequest>>,
         platform_url: String,
@@ -367,15 +367,13 @@ impl TransactionProcessor {
             }
         }
 
-        // TODO: There is a bug in the platform where we can pass the hash twice
-        // let hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
         Err(format!("Transaction #{} could not be signed or sent", request_id).into())
     }
 
     async fn transaction_handler(
         chain_client: Arc<OnlineClient<PolkadotConfig>>,
         platform_client: Client,
-        block_subscription: Arc<BlockSubscription>,
+        block_subscription: Arc<SubscriptionParams>,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         platform_url: String,
