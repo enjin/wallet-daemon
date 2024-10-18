@@ -41,6 +41,7 @@ impl SubscriptionParams {
         self: Arc<Self>,
         updater: ClientRuntimeUpdater<PolkadotConfig>,
     ) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
+        let mut already_fetched = false;
         let mut update_stream = updater.runtime_updates().await.unwrap();
 
         while let Some(Ok(update)) = update_stream.next().await {
@@ -51,7 +52,16 @@ impl SubscriptionParams {
                     tracing::info!("Upgrade to specVersion: {} successful", version)
                 }
                 Err(e) => {
-                    tracing::warn!("Upgrade to specVersion {} failed {:?} - You may safely ignore this if you just started the daemon", version, e);
+                    if !already_fetched {
+                        tracing::info!("Using specVersion {} to sign transactions", version);
+                        already_fetched = true;
+                    } else {
+                        tracing::error!(
+                            "Upgrade to specVersion {} failed {:?}. Please restart your daemon.",
+                            version,
+                            e
+                        );
+                    }
                 }
             };
         }
