@@ -209,14 +209,6 @@ impl TransactionJob {
             .collect())
     }
 }
-//
-// #[derive(AsyncIncremental, PartialEq, Eq, Debug)]
-// struct Nonce(u64);
-//
-// struct EnjinWallet {
-//     nonce: Nonce,
-//     players_nonce: Mutex<LruCache<DeriveJunction, Nonce>>,
-// }
 
 pub struct TransactionProcessor {
     chain_client: Arc<OnlineClient<PolkadotConfig>>,
@@ -388,7 +380,12 @@ impl TransactionProcessor {
         }: TransactionRequest,
     ) {
         let signer = if external_id.is_some() {
-            keypair.derive([DeriveJunction::soft(external_id.unwrap())])
+            let derive_junction = match external_id.parse::<i64>() {
+                Ok(_) => DeriveJunction::soft(external_id.parse::<i64>().unwrap()),
+                Err(_) => DeriveJunction::soft(external_id.clone()),
+            };
+
+            keypair.derive([derive_junction])
         } else {
             keypair
         };
