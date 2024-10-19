@@ -379,10 +379,10 @@ impl TransactionProcessor {
             payload,
         }: TransactionRequest,
     ) {
-        let signer = if external_id.is_some() {
+        let signer = if let Some(external_id) = external_id {
             let derive_junction = match external_id.parse::<i64>() {
-                Ok(_) => DeriveJunction::soft(external_id.parse::<i64>().unwrap()),
-                Err(_) => DeriveJunction::soft(external_id.clone()),
+                Ok(id) => DeriveJunction::soft(id),
+                Err(_) => DeriveJunction::soft(external_id),
             };
 
             keypair.derive([derive_junction])
