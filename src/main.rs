@@ -17,7 +17,7 @@ use tokio::signal;
 use tokio::task::JoinHandle;
 use wallet_daemon::config_loader::{load_config, load_wallet};
 use wallet_daemon::{
-    set_multitenant, write_seed, BlockSubscription, DeriveWalletJob, TransactionJob,
+    set_multitenant, write_seed, DeriveWalletJob, SubscriptionParams, TransactionJob,
 };
 
 #[tokio::main(flavor = "multi_thread")]
@@ -55,12 +55,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap();
 
+    let update_task = chain_client.updater();
+    tokio::spawn(async move {
+        update_task.perform_runtime_updates().await;
+    });
+
     let chain_client = Arc::new(chain_client);
-    let block_subscription = BlockSubscription::new(Arc::clone(&chain_client));
+    let subscription = SubscriptionParams::new(Arc::clone(&chain_client));
 
     let (transaction_poller, transaction_processor) = TransactionJob::create_job(
         Arc::clone(&chain_client),
-        Arc::clone(&block_subscription),
+        Arc::clone(&subscription),
         keypair.clone(),
         platform_url.clone(),
         platform_token.clone(),
