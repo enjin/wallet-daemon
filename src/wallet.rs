@@ -206,8 +206,14 @@ impl DeriveWalletProcessor {
             managed: _,
         }: DeriveWalletRequest,
     ) {
-        let derived_pair = keypair.derive([DeriveJunction::soft(external_id.clone())]);
+        let derive_junction = match external_id.parse::<i64>() {
+            Ok(_) => DeriveJunction::soft(external_id.parse::<i64>().unwrap()),
+            Err(_) => DeriveJunction::soft(external_id.clone()),
+        };
+
+        let derived_pair = keypair.derive([derive_junction]);
         let derived_key = hex::encode(derived_pair.public_key().0);
+
         platform_client::set_wallet_account(
             client,
             platform_url,
