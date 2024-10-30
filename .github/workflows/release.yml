@@ -54,5 +54,5 @@ jobs:
         with:
           RUSTTARGET: ${{ matrix.target }}
           UPLOAD_MODE: ${{ env.UPLOAD_MODE }}
-          SRC_DIR: bin
+          SRC_DIR: src
           ARCHIVE_TYPES: ${{ matrix.archive }}
