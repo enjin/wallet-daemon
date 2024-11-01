@@ -16,7 +16,7 @@ jobs:
         run: cargo build --release
 
       - name: Archive Release
-        uses: vimtor/action-zip@v1.1
+        uses: vimtor/action-zip@v1.2
         with:
           files: target/release/wallet
           dest: target/release/wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
