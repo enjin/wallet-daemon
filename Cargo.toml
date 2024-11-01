@@ -25,7 +25,7 @@ serde_json = "1.0.128"
 hex = "0.4.3"
 tracing-subscriber = "0.3.18"
 config = "0.14.0"
-secrecy = "0.8.0"
+secrecy = "0.10.3"
 sp-core = { version = "34.0.0", default-features = false, features = [
     "std",
 ] }
