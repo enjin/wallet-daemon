@@ -1,12 +1,6 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use crate::graphql::{
-    get_pending_wallets, set_wallet_account, GetPendingWallets, SetWalletAccount,
-};
+use crate::graphql::{get_pending_wallets, GetPendingWallets};
 use crate::platform_client;
 use graphql_client::GraphQLQuery;
-use log::trace;
 use reqwest::{Client, Response};
 use std::time::Duration;
 use subxt_signer::sr25519::Keypair;
@@ -22,8 +16,6 @@ const ACCOUNT_PAGE_SIZE: i64 = 200;
 pub struct DeriveWalletRequest {
     request_id: i64,
     external_id: String,
-    network: String,
-    managed: bool,
 }
 
 impl TryFrom<get_pending_wallets::GetPendingWalletsGetPendingWalletsEdges> for DeriveWalletRequest {
@@ -35,8 +27,6 @@ impl TryFrom<get_pending_wallets::GetPendingWalletsGetPendingWalletsEdges> for D
         Ok(Self {
             external_id: edge.node.external_id.ok_or("No external id")?,
             request_id: edge.node.id,
-            network: edge.node.network,
-            managed: edge.node.managed,
         })
     }
 }
@@ -44,7 +34,6 @@ impl TryFrom<get_pending_wallets::GetPendingWalletsGetPendingWalletsEdges> for D
 #[derive(Debug)]
 pub struct DeriveWalletJob {
     client: Client,
-    keypair: Keypair,
     sender: Sender<Vec<DeriveWalletRequest>>,
     platform_url: String,
     platform_token: String,
@@ -53,14 +42,12 @@ pub struct DeriveWalletJob {
 impl DeriveWalletJob {
     pub fn new(
         client: Client,
-        keypair: Keypair,
         sender: Sender<Vec<DeriveWalletRequest>>,
         platform_url: String,
         platform_token: String,
     ) -> Self {
         Self {
             client,
-            keypair,
             sender,
             platform_url,
             platform_token,
@@ -77,7 +64,6 @@ impl DeriveWalletJob {
         (
             DeriveWalletJob::new(
                 Client::new(),
-                keypair.clone(),
                 sender,
                 platform_url.clone(),
                 platform_token.clone(),
@@ -202,8 +188,6 @@ impl DeriveWalletProcessor {
         DeriveWalletRequest {
             request_id,
             external_id,
-            network: _,
-            managed: _,
         }: DeriveWalletRequest,
     ) {
         let derive_junction = match external_id.parse::<i64>() {

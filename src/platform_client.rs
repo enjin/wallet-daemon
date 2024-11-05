@@ -1,13 +1,10 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use crate::graphql::{set_wallet_account, update_transaction, SetWalletAccount, UpdateTransaction};
-use backon::{BlockingRetryable, ExponentialBuilder, Retryable};
+use backon::{ExponentialBuilder, Retryable};
 use graphql_client::GraphQLQuery;
 use reqwest::Client;
 use std::time::Duration;
 
-pub struct PlatformExponentialBuilder(ExponentialBuilder);
+pub struct PlatformExponentialBuilder();
 impl PlatformExponentialBuilder {
     pub fn default() -> ExponentialBuilder {
         ExponentialBuilder::default()

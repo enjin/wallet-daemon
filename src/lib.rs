@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 pub use importer::write_seed;
 pub use multitenant::set_multitenant;
 pub use platform_client::{set_wallet_account, update_transaction};

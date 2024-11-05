@@ -1,20 +1,11 @@
 #![allow(missing_docs)]
-#![allow(dead_code)]
-#![allow(unused)]
-
 use std::env;
-use std::fs::File;
 use std::process::exit;
-use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
-use subxt::backend::rpc::reconnecting_rpc_client::{Client, ExponentialBackoff};
-use subxt::ext::scale_decode::visitor::types::BitSequence;
+use subxt::backend::rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient};
 use subxt::{OnlineClient, PolkadotConfig};
-use subxt_signer::sr25519::Keypair;
-use subxt_signer::SecretUri;
 use tokio::signal;
-use tokio::task::JoinHandle;
 use wallet_daemon::config_loader::{load_config, load_wallet};
 use wallet_daemon::{
     set_multitenant, write_seed, DeriveWalletJob, SubscriptionParams, TransactionJob,
@@ -33,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let (keypair, matrix_url, relay_url, platform_url, platform_token) =
+    let (keypair, matrix_url, _relay_url, platform_url, platform_token) =
         load_wallet(load_config()).await;
     let signing = hex::encode(keypair.public_key().0);
 
@@ -41,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     set_multitenant(signing, platform_url.clone(), platform_token.clone()).await;
 
-    let rpc_client = Client::builder()
+    let rpc_client = RpcClient::builder()
         .retry_policy(
             ExponentialBackoff::from_millis(100)
                 .max_delay(Duration::from_secs(10))
@@ -57,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let update_task = chain_client.updater();
     tokio::spawn(async move {
-        update_task.perform_runtime_updates().await;
+        let _ = update_task.perform_runtime_updates().await;
     });
 
     let chain_client = Arc::new(chain_client);
