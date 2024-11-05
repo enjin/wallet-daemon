@@ -236,7 +236,6 @@ impl TransactionProcessor {
         payload: Vec<u8>,
         block_header: SubstrateHeader<u32, BlakeTwo256>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        // Let's correct the nonce here
         let public_key = hex::encode(keypair.public_key().0);
         let chain_nonce = chain_client
             .tx()
@@ -293,7 +292,6 @@ impl TransactionProcessor {
                 }
                 TxStatus::Invalid { message } => {
                     tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
-                    // tracing::error!("Full transaction: {}", encoded_tx);
                 }
                 TxStatus::Broadcasted { num_peers: _ } => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
@@ -394,7 +392,6 @@ impl TransactionProcessor {
             {
                 Ok(hash) => Ok(hash),
                 Err(e) => {
-                    // Few possible errors
                     // ServerError(1010) - Invalid Transaction - Transaction is outdated
                     // ServerError(1012) - Transaction is temporally banned
                     // ServerError(1013) - Transaction already imported
@@ -491,12 +488,6 @@ impl TransactionProcessor {
 
         tracing::info!("Waiting for 2 blocks to get correct initial nonce");
         sleep(Duration::from_millis(BLOCK_TIME_MS * 2)).await;
-
-        // tracing::info!(
-        //     "Setting initial nonce to {} for account {}",
-        //     initial_nonce,
-        //     trim_account(hex::encode(self.keypair.public_key().0))
-        // );
 
         while let Some(requests) = self.receiver.recv().await {
             for request in requests {

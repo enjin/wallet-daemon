@@ -70,7 +70,6 @@ pub async fn update_transaction(
             }
             Err(e) => {
                 tracing::error!("Error decoding response of the platform: {:?}", e);
-                // tracing::error!("Response body: {:?}", res);
             }
         },
         Err(e) => tracing::error!("Error sending UpdateTransaction: {:?}", e),
