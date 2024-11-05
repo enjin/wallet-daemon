@@ -31,4 +31,4 @@ sp-core = { version = "34.0.0", default-features = false, features = [
 ] }
 bip39 = { version = "2.0.0", features = ["rand"] }
 autoincrement = "1.0.1"
-lru = "0.12.4"
+lru = "0.12.5"
