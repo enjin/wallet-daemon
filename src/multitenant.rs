@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use crate::graphql;
 use graphql_client::{GraphQLQuery, Response};
 use reqwest::Client;
@@ -13,10 +10,7 @@ struct Platform {
     packages: HashMap<String, Value>,
 }
 
-async fn get_packages(
-    platform_url: String,
-    platform_token: String,
-) -> Result<bool, Box<dyn std::error::Error>> {
+async fn get_packages(platform_url: String) -> Result<bool, Box<dyn std::error::Error>> {
     let platform = platform_url.replace("/graphql", "");
 
     let client = Client::new();
@@ -54,7 +48,7 @@ async fn update_user(
 }
 
 pub async fn set_multitenant(account: String, platform_url: String, platform_token: String) {
-    let is_tenant = get_packages(platform_url.clone(), platform_token.clone())
+    let is_tenant = get_packages(platform_url.clone())
         .await
         .expect("We could not connect to Enjin Platform, check your connection or the url");
 

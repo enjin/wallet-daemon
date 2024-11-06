@@ -1,26 +1,25 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use std::sync::{Arc, Mutex};
 use subxt::client::ClientRuntimeUpdater;
 use subxt::ext::subxt_core;
 use subxt::{OnlineClient, PolkadotConfig};
 use subxt_core::config::substrate;
-use tokio::task::JoinHandle;
 
 #[derive(Debug)]
 pub struct SubscriptionParams {
     rpc: Arc<OnlineClient<PolkadotConfig>>,
     block_header: Arc<Mutex<Option<substrate::SubstrateHeader<u32, substrate::BlakeTwo256>>>>,
+    spec_version: Arc<Mutex<Option<u32>>>,
 }
 
 impl SubscriptionParams {
     pub fn new(rpc: Arc<OnlineClient<PolkadotConfig>>) -> Arc<Self> {
         let block_header = Arc::new(Mutex::new(None));
+        let spec_version = Arc::new(Mutex::new(None));
 
         let subscription = Arc::new(Self {
             rpc: Arc::clone(&rpc),
             block_header: Arc::clone(&block_header),
+            spec_version: Arc::clone(&spec_version),
         });
 
         let block_sub = Arc::clone(&subscription);
@@ -41,28 +40,34 @@ impl SubscriptionParams {
         self: Arc<Self>,
         updater: ClientRuntimeUpdater<PolkadotConfig>,
     ) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
-        let mut already_fetched = false;
         let mut update_stream = updater.runtime_updates().await.unwrap();
 
         while let Some(Ok(update)) = update_stream.next().await {
             let version = update.runtime_version().spec_version;
+            let mut spec_version = self.spec_version.lock().unwrap();
 
             match updater.apply_update(update) {
                 Ok(()) => {
+                    *spec_version = Some(version);
                     tracing::info!("Upgrade to specVersion: {} successful", version)
                 }
-                Err(e) => {
-                    if !already_fetched {
-                        tracing::info!("Using specVersion {} to sign transactions", version);
-                        already_fetched = true;
-                    } else {
+                Err(e) => match *spec_version {
+                    Some(v) => {
+                        if v == version {
+                            continue;
+                        }
+
                         tracing::error!(
                             "Upgrade to specVersion {} failed {:?}. Please restart your daemon.",
                             version,
                             e
                         );
                     }
-                }
+                    None => {
+                        *spec_version = Some(version);
+                        tracing::info!("Using specVersion {} to sign transactions", version);
+                    }
+                },
             };
         }
 

@@ -1,26 +1,15 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use crate::graphql::{mark_and_list_pending_transactions, MarkAndListPendingTransactions};
-use crate::platform_client::{update_transaction, PlatformExponentialBuilder};
 use crate::{platform_client, SubscriptionParams};
-use autoincrement::prelude::*;
-use autoincrement::AsyncIncrement;
 use backoff::exponential::ExponentialBackoff;
 use backoff::SystemClock;
-use backon::{BlockingRetryable, Retryable};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use reqwest::{Client, Response};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
-use subxt::backend::rpc::RpcClient;
 use subxt::config::substrate::{BlakeTwo256, SubstrateHeader};
 use subxt::config::{DefaultExtrinsicParamsBuilder as Params, Header};
-use subxt::ext::codec::Encode;
-use subxt::tx::Signer;
 use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
@@ -40,7 +29,8 @@ impl subxt::tx::Payload for Wrapper {
         _metadata: &subxt::Metadata,
         out: &mut Vec<u8>,
     ) -> Result<(), subxt::ext::subxt_core::Error> {
-        Ok(out.extend_from_slice(&self.0))
+        out.extend_from_slice(&self.0);
+        Ok(())
     }
 }
 
@@ -48,7 +38,6 @@ impl subxt::tx::Payload for Wrapper {
 pub struct TransactionRequest {
     request_id: i64,
     external_id: Option<String>,
-    network: String,
     payload: Vec<u8>,
 }
 
@@ -62,7 +51,6 @@ impl TryFrom<mark_and_list_pending_transactions::MarkAndListPendingTransactionsM
         Ok(Self {
             external_id,
             request_id: edge.node.id,
-            network: edge.node.network,
             payload: hex::decode(edge.node.encoded_data.split('x').nth(1).unwrap())?,
         })
     }
@@ -71,7 +59,6 @@ impl TryFrom<mark_and_list_pending_transactions::MarkAndListPendingTransactionsM
 #[derive(Debug)]
 pub struct TransactionJob {
     client: Client,
-    keypair: Keypair,
     sender: Sender<Vec<TransactionRequest>>,
     platform_url: String,
     platform_token: String,
@@ -80,14 +67,12 @@ pub struct TransactionJob {
 impl TransactionJob {
     pub fn new(
         client: Client,
-        keypair: Keypair,
         sender: Sender<Vec<TransactionRequest>>,
         platform_url: String,
         platform_token: String,
     ) -> Self {
         Self {
             client,
-            keypair,
             sender,
             platform_url,
             platform_token,
@@ -106,7 +91,6 @@ impl TransactionJob {
         (
             TransactionJob::new(
                 Client::new(),
-                keypair.clone(),
                 sender,
                 platform_url.clone(),
                 platform_token.clone(),
@@ -190,7 +174,7 @@ impl TransactionJob {
             .ok_or(NO_TRANSACTIONS_MSG)?
             .edges;
 
-        if (transactions_req.is_empty()) {
+        if transactions_req.is_empty() {
             return Err(NO_TRANSACTIONS_MSG.into());
         }
 
@@ -252,8 +236,7 @@ impl TransactionProcessor {
         payload: Vec<u8>,
         block_header: SubstrateHeader<u32, BlakeTwo256>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        // Let's correct the nonce here
-        let public_key = hex::encode(&keypair.public_key().0);
+        let public_key = hex::encode(keypair.public_key().0);
         let chain_nonce = chain_client
             .tx()
             .account_nonce(&keypair.public_key().into())
@@ -283,7 +266,7 @@ impl TransactionProcessor {
             .create_signed(&Wrapper(payload), &keypair, params)
             .await?;
 
-        let encoded_tx = hex::encode(&signed_tx.encoded());
+        let encoded_tx = hex::encode(signed_tx.encoded());
         tracing::info!("Request: #{} - Nonce: {} - Mortality: 64 - BlockNumber: #{} - BlockHash: 0x{} - Genesis: 0x{} - SpecVersion: {} - TxVersion: {} - Extrinsic: 0x{}",
             request_id,
             correct_nonce,
@@ -309,7 +292,6 @@ impl TransactionProcessor {
                 }
                 TxStatus::Invalid { message } => {
                     tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
-                    // tracing::error!("Full transaction: {}", encoded_tx);
                 }
                 TxStatus::Broadcasted { num_peers: _ } => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
@@ -373,7 +355,6 @@ impl TransactionProcessor {
         TransactionRequest {
             request_id,
             external_id,
-            network,
             payload,
         }: TransactionRequest,
     ) {
@@ -411,7 +392,6 @@ impl TransactionProcessor {
             {
                 Ok(hash) => Ok(hash),
                 Err(e) => {
-                    // Few possible errors
                     // ServerError(1010) - Invalid Transaction - Transaction is outdated
                     // ServerError(1012) - Transaction is temporally banned
                     // ServerError(1013) - Transaction already imported
@@ -468,7 +448,7 @@ impl TransactionProcessor {
                 )
                 .await;
             }
-            Err(e) => {
+            Err(_) => {
                 tracing::error!(
                     "Transaction #{} failed to sign with account {} setting it to ABANDONED",
                     request_id,
@@ -502,34 +482,12 @@ impl TransactionProcessor {
         setting
     }
 
-    async fn get_initial_nonce(&self) -> u64 {
-        loop {
-            tracing::info!("Waiting for 2 blocks to get the initial nonce");
-            sleep(Duration::from_millis(BLOCK_TIME_MS)).await;
-
-            match self
-                .chain_client
-                .tx()
-                .account_nonce(&self.keypair.public_key().into())
-                .await
-            {
-                Ok(nonce) => return nonce,
-                Err(e) => tracing::error!("Error getting initial nonce, retrying: {:?}", e),
-            }
-        }
-    }
     async fn launch_job_scheduler(mut self) {
         let nonce_tracker: Arc<Mutex<LruCache<String, u64>>> =
             Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
 
         tracing::info!("Waiting for 2 blocks to get correct initial nonce");
         sleep(Duration::from_millis(BLOCK_TIME_MS * 2)).await;
-
-        // tracing::info!(
-        //     "Setting initial nonce to {} for account {}",
-        //     initial_nonce,
-        //     trim_account(hex::encode(self.keypair.public_key().0))
-        // );
 
         while let Some(requests) = self.receiver.recv().await {
             for request in requests {

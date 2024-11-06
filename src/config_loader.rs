@@ -1,8 +1,4 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use config::Config;
-use secrecy::ExposeSecret;
 use serde::Deserialize;
 use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
 use std::path::{Path, PathBuf};
@@ -10,7 +6,7 @@ use std::str::FromStr;
 use std::{env, fs};
 use subxt_signer::bip39::Mnemonic;
 use subxt_signer::sr25519::Keypair;
-use subxt_signer::{SecretString, SecretUri};
+use subxt_signer::{ExposeSecret, SecretString, SecretUri};
 
 pub(crate) const CONFIG_FILE_ENV_NAME: &str = "CONFIG_FILE";
 pub(crate) const DEFAULT_CONFIG_FILE: &str = "config.json";
@@ -23,17 +19,6 @@ pub struct Configuration {
     relay_node: String,
     master_key: PathBuf,
     api: String,
-}
-
-impl Configuration {
-    pub(crate) fn new(node: String, relay_node: String, master_key: PathBuf, api: String) -> Self {
-        Self {
-            node,
-            relay_node,
-            master_key,
-            api,
-        }
-    }
 }
 
 pub fn load_config() -> Configuration {
@@ -54,9 +39,12 @@ pub fn load_config() -> Configuration {
 }
 
 fn get_password(env_name: &str) -> SecretString {
-    SecretString::new(
-        env::var(env_name).expect(&format!("Password {} not loaded in memory", env_name)),
-    )
+    match env::var(env_name) {
+        Ok(p) => SecretString::from(p),
+        Err(_) => {
+            panic!("Password {} not loaded in memory", env_name)
+        }
+    }
 }
 
 async fn get_keys(key_store_path: &Path, password: SecretString) -> Keypair {
