@@ -1,6 +1,6 @@
 # ===== FIRST STAGE ======
 
-FROM rust:1.82 as builder
+FROM rust:1.82-bookworm as builder
 LABEL description="This is the build stage for the wallet. Here we create the binary."
 
 WORKDIR /wallet
@@ -16,7 +16,7 @@ RUN cargo build --release
 
 # ===== SECOND STAGE ======
 
-FROM debian:buster-slim as runner
+FROM debian:bookworm-slim as runner
 LABEL description="This is the 2nd stage: a very small image where we copy the wallet binary."
 # reqwest needs libssl and curl is needed to install the ca-certificates
 # awscli is needed for the start script to retrieve the secrets
