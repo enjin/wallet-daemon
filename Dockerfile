@@ -1,6 +1,6 @@
 # ===== FIRST STAGE ======
 
-FROM rust:1.82-alpine as builder
+FROM rust:1.82 as builder
 LABEL description="This is the build stage for the wallet. Here we create the binary."
 
 WORKDIR /wallet
