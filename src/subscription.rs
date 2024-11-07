@@ -24,22 +24,19 @@ impl SubscriptionParams {
 
         let block_sub = Arc::clone(&subscription);
         tokio::spawn(async move {
-            block_sub.block_subscription().await.unwrap();
+            block_sub.block_subscription().await;
         });
 
         let runtime_sub = Arc::clone(&subscription);
         let updater = runtime_sub.rpc.updater();
         tokio::spawn(async move {
-            runtime_sub.runtime_subscription(updater).await.unwrap();
+            runtime_sub.runtime_subscription(updater).await;
         });
 
         subscription
     }
 
-    async fn runtime_subscription(
-        self: Arc<Self>,
-        updater: ClientRuntimeUpdater<PolkadotConfig>,
-    ) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
+    async fn runtime_subscription(self: Arc<Self>, updater: ClientRuntimeUpdater<PolkadotConfig>) {
         let mut update_stream = updater.runtime_updates().await.unwrap();
 
         while let Some(Ok(update)) = update_stream.next().await {
@@ -70,14 +67,10 @@ impl SubscriptionParams {
                 },
             };
         }
-
-        Ok(())
     }
 
-    async fn block_subscription(
-        self: Arc<Self>,
-    ) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
-        let mut blocks_sub = self.rpc.blocks().subscribe_finalized().await?;
+    async fn block_subscription(self: Arc<Self>) {
+        let mut blocks_sub = self.rpc.blocks().subscribe_finalized().await.unwrap();
 
         while let Some(block) = blocks_sub.next().await {
             let block = match block {
@@ -85,10 +78,9 @@ impl SubscriptionParams {
                 Err(e) => {
                     if e.is_disconnected_will_reconnect() {
                         tracing::warn!("Lost connection with the RPC node, reconnecting...");
-                        continue;
                     }
 
-                    return Err(e.into());
+                    continue;
                 }
             };
 
@@ -102,8 +94,6 @@ impl SubscriptionParams {
 
             *block_header = Some(block.header().clone());
         }
-
-        Ok(())
     }
 
     pub fn get_block_header(&self) -> substrate::SubstrateHeader<u32, substrate::BlakeTwo256> {
