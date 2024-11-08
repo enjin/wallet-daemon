@@ -37,5 +37,6 @@ jobs:
         with:
           RUSTTARGET: ${{ matrix.target }}
           UPLOAD_MODE: "none"
+          TOOLCHAIN_VERSION: "1.82"
           SRC_DIR: src
           ARCHIVE_TYPES: ${{ matrix.archive }}
