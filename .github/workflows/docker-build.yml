@@ -1,4 +1,4 @@
-name: Build Docker Image
+name: Test builds docker
 
 on:
   pull_request:
