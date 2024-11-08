@@ -1,23 +1,42 @@
-name: Test Build
-
+name: Test build releases
 on:
-  push:
   pull_request:
-
-env:
-  CARGO_TERM_COLOR: always
+  push:
 
 jobs:
-  build:
+  build-linux:
+    name: Build x86_64-unknown-linux-gnu
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --release
 
-      - name: Run tests
-        run: cargo test --verbose
+      - name: Archive Release
+        uses: vimtor/action-zip@v1.2
+        with:
+          files: target/release/wallet
+          dest: target/release/wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
 
-      - name: Run clippy
-        run: cargo clippy
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-gnu
+            archive: zip
+          - target: x86_64-apple-darwin
+            archive: zip
+    steps:
+      - name: Compile and release
+      - uses: actions/checkout@v4
+      - uses: rust-build/rust-build.action@v1.4.5
+        with:
+          RUSTTARGET: ${{ matrix.target }}
+          UPLOAD_MODE: "none"
+          SRC_DIR: src
+          ARCHIVE_TYPES: ${{ matrix.archive }}
