@@ -9,18 +9,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
       - name: Build
         run: cargo build --release
-
       - name: Archive Release
         uses: vimtor/action-zip@v1.2
         with:
           files: target/release/wallet
           dest: target/release/wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
-
       - name: Linux Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
@@ -29,19 +26,11 @@ jobs:
         with:
           files: target/release/wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
 
-  release:
-    name: Release ${{ matrix.target }}
+  release-windows:
+    name: Release x86_64-pc-windows-gnu
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-pc-windows-gnu
-            archive: zip
-          - target: x86_64-apple-darwin
-            archive: zip
     steps:
       - name: Compile and release
         if: "!startsWith(github.ref, 'refs/tags/')"
@@ -52,8 +41,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          RUSTTARGET: ${{ matrix.target }}
+          RUSTTARGET: "x86_64-pc-windows-gnu"
           UPLOAD_MODE: ${{ env.UPLOAD_MODE }}
           TOOLCHAIN_VERSION: "1.82"
           SRC_DIR: src
-          ARCHIVE_TYPES: ${{ matrix.archive }}
+          ARCHIVE_TYPES: "zip"
+
+  release-mac:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+      - name: Install latest rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: "1.82"
+          target: x86_64-apple-darwin
+          default: true
+          override: true
+      - name: Build for mac
+        run: cargo build --release
+      - name: Archive Release
+        uses: vimtor/action-zip@v1.2
+        with:
+          files: target/release/wallet
+          dest: target/release/wallet-daemon_${{github.ref_name}}_x86_64-apple-darwin.zip
+      - name: Linux Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: target/release/wallet-daemon_${{github.ref_name}}_x86_64-apple-darwin.zip
