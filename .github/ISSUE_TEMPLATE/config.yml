@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Bug Report
+    url: https://enj.in/platform-bug-report
+    about: Submit a bug report to help us improve the Enjin Platform.
+  - name: Official Support
+    url: https://enj.in/support
+    about: Contact us for official support.
