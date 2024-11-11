@@ -13,5 +13,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
-      - name: Check Version
-        uses: obi1kenobi/cargo-semver-checks-action@v2
+      - name: check
+        run: |
+          # Fetch the version from Cargo.toml
+          version=$(grep -m 1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          
+          # Fetch the JSON data using curl
+          json_data=$(curl -s https://api.github.com/repos/enjin/wallet-daemon/releases/latest)
+          
+          # Extract the tag_name and remove the leading 'v'
+          compare_version=$(echo "$json_data" | jq -r '.tag_name' | sed 's/^v//')
+          
+          # Print the version
+          echo $version
+          
+          # Compare versions
+          if [ "$(printf '%s\n' "$version" "$compare_version" | sort -V | head -n 1)" = "$version" ] && [ "$version" != "$compare_version" ]; then
+              echo "The version in Cargo.toml ($version) is lower than $compare_version"
+          else
+              echo "The version in Cargo.toml ($version) is higher or equal to $compare_version"
+          fi
