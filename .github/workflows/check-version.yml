@@ -1,0 +1,17 @@
+name: Check Version
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: check-version-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v1
+      - name: Check Version
+        uses: obi1kenobi/cargo-semver-checks-action@v2
