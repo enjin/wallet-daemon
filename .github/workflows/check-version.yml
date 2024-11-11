@@ -25,6 +25,14 @@ jobs:
           compare_version=$(echo "$json_data" | jq -r '.tag_name' | sed 's/^v//')
           
           # Compare versions
-          if [ "$(printf '%s\n' "$version" "$compare_version" | sort -V | head -n 1)" = "$version" ] && [ "$version" != "$compare_version" ]; then
-              exit 1
+          if [ "$(printf '%s\n' "$version" "$compare_version" | sort -V | head -n 1)" = "$version" ]; then
+              if [ "$version" != "$compare_version" ]; then
+                  echo "The version in Cargo.toml ($version) is lower than $compare_version"
+                  exit 1
+              else
+                  echo "The version in Cargo.toml ($version) is equal to $compare_version"
+                  exit 1
+              fi
+          else
+              echo "The version in Cargo.toml ($version) is higher than $compare_version"
           fi
