@@ -2,7 +2,7 @@
 pub use importer::write_seed;
 pub use multitenant::set_multitenant;
 pub use platform_client::{set_wallet_account, update_transaction};
-pub use subscription::SubscriptionParams;
+pub use subscription::{SubscriptionJob, SubscriptionParams};
 pub use transaction::TransactionJob;
 pub use wallet::DeriveWalletJob;
 

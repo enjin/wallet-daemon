@@ -8,7 +8,7 @@ use subxt::{OnlineClient, PolkadotConfig};
 use tokio::signal;
 use wallet_daemon::config_loader::{load_config, load_wallet};
 use wallet_daemon::{
-    set_multitenant, write_seed, DeriveWalletJob, SubscriptionParams, TransactionJob,
+    set_multitenant, write_seed, DeriveWalletJob, SubscriptionJob, TransactionJob,
 };
 
 #[tokio::main(flavor = "multi_thread")]
@@ -52,16 +52,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let chain_client = Arc::new(chain_client);
-    let subscription = SubscriptionParams::new(Arc::clone(&chain_client));
+    let subscription_job = SubscriptionJob::create_job(Arc::clone(&chain_client));
+    let params = subscription_job.get_params();
 
     let (transaction_poller, transaction_processor) = TransactionJob::create_job(
         Arc::clone(&chain_client),
-        Arc::clone(&subscription),
+        Arc::clone(&params),
         keypair.clone(),
         platform_url.clone(),
         platform_token.clone(),
     );
 
+    subscription_job.start();
     transaction_poller.start();
     transaction_processor.start();
 
