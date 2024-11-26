@@ -7,9 +7,7 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
+    permissions: write-all
       
     steps:
       - uses: actions/checkout@v4

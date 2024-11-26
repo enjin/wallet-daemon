@@ -89,6 +89,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.93"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c95c10ba0b00a02636238b814946408b1322d5ac4760326e6fb8ec956d85775"
+
+[[package]]
 name = "ark-bls12-377"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4848,8 +4854,9 @@ dependencies = [
 
 [[package]]
 name = "wallet-daemon"
-version = "2.0.2"
+version = "2.0.3"
 dependencies = [
+ "anyhow",
  "async-trait",
  "autoincrement",
  "backoff",

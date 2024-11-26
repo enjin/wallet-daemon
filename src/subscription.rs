@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex};
-use std::{panic, process};
+use std::{panic};
 use subxt::client::ClientRuntimeUpdater;
 use subxt::ext::subxt_core;
 use subxt::{OnlineClient, PolkadotConfig};
 use subxt_core::config::substrate;
+use tokio::task::JoinHandle;
 
 #[derive(Debug)]
 pub struct SubscriptionJob {
@@ -27,32 +28,17 @@ impl SubscriptionJob {
         SubscriptionJob::new(subscription)
     }
 
-    pub fn start(&self) {
-        let orig_hook = panic::take_hook();
-        panic::set_hook(Box::new(move |panic_info| {
-            orig_hook(panic_info);
-            process::exit(1);
-        }));
-
-        self.start_block();
-        self.start_runtime();
-    }
-
-    pub fn start_block(&self) {
+    pub fn start(&self) -> JoinHandle<()> {
         let block_sub = Arc::clone(&self.params);
-
-        tokio::spawn(async move {
-            block_sub.block_subscription().await;
-        });
-    }
-
-    pub fn start_runtime(&self) {
         let runtime_sub = Arc::clone(&self.params);
         let updater = runtime_sub.rpc.updater();
 
         tokio::spawn(async move {
-            runtime_sub.runtime_subscription(updater).await;
-        });
+            tokio::select! {
+                _ = block_sub.block_subscription() => {}
+                _ = runtime_sub.runtime_subscription(updater) => {}
+            }
+        })
     }
 
     pub fn get_params(&self) -> Arc<SubscriptionParams> {
@@ -99,6 +85,8 @@ impl SubscriptionParams {
                 },
             };
         }
+
+        tracing::error!("Runtime update stream ended unexpectedly");
     }
 
     async fn block_subscription(self: Arc<Self>) {
@@ -126,6 +114,8 @@ impl SubscriptionParams {
 
             *block_header = Some(block.header().clone());
         }
+
+        tracing::error!("Block subscription stream ended unexpectedly");
     }
 
     pub fn get_block_header(&self) -> substrate::SubstrateHeader<u32, substrate::BlakeTwo256> {
