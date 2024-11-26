@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use subxt::backend::rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient};
 use subxt::{OnlineClient, PolkadotConfig};
-use tokio::signal;
 use wallet_daemon::config_loader::{load_config, load_wallet};
 use wallet_daemon::{
     set_multitenant, write_seed, DeriveWalletJob, SubscriptionJob, TransactionJob,
@@ -63,17 +62,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         platform_token.clone(),
     );
 
-    subscription_job.start();
-    transaction_poller.start();
-    transaction_processor.start();
-
     let (wallet_poller, wallet_processor) =
         DeriveWalletJob::create_job(keypair, platform_url, platform_token);
 
-    wallet_poller.start();
-    wallet_processor.start();
-
-    signal::ctrl_c().await.expect("Failed to listen for ctrl c");
+    tokio::select! {
+        _ = transaction_poller.start() => {}
+        _ =  transaction_processor.start() => {}
+        _ = wallet_poller.start() => {}
+        _ = wallet_processor.start() => {}
+        r = subscription_job.start() => {
+            let err = r.unwrap_err();
+            tracing::error!("Subscription job failed: {:?}", err);
+        }
+    }
 
     Ok(())
 }

@@ -78,10 +78,10 @@ impl DeriveWalletJob {
         )
     }
 
-    pub fn start(self) {
+    pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             self.start_polling().await;
-        });
+        })
     }
 
     async fn start_polling(&self) {
