@@ -15,7 +15,7 @@ subxt = { version = "0.38.0", features = ["native", "reconnecting-rpc-client"] }
 subxt-signer = "0.38.0"
 backoff = { version = "0.4", default-features = false, features = ["tokio"] }
 backon = "1.3.0"
-tokio = { version = "1.41.1", features = [
+tokio = { version = "1.42.0", features = [
     "rt",
     "macros",
     "rt-multi-thread",
