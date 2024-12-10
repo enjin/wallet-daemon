@@ -1,4 +1,5 @@
 use crate::graphql::{mark_and_list_pending_transactions, MarkAndListPendingTransactions};
+use crate::subscription::Network;
 use crate::{platform_client, SubscriptionParams};
 use backoff::exponential::ExponentialBackoff;
 use backoff::SystemClock;
@@ -62,6 +63,7 @@ pub struct TransactionJob {
     sender: Sender<Vec<TransactionRequest>>,
     platform_url: String,
     platform_token: String,
+    network: Arc<Network>,
 }
 
 impl TransactionJob {
@@ -70,12 +72,14 @@ impl TransactionJob {
         sender: Sender<Vec<TransactionRequest>>,
         platform_url: String,
         platform_token: String,
+        network: Arc<Network>,
     ) -> Self {
         Self {
             client,
             sender,
             platform_url,
             platform_token,
+            network,
         }
     }
 
@@ -87,6 +91,7 @@ impl TransactionJob {
         platform_token: String,
     ) -> (TransactionJob, TransactionProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
+        let network = block_sub.get_network();
 
         (
             TransactionJob::new(
@@ -94,6 +99,7 @@ impl TransactionJob {
                 sender,
                 platform_url.clone(),
                 platform_token.clone(),
+                network,
             ),
             TransactionProcessor::new(
                 rpc,
@@ -128,7 +134,11 @@ impl TransactionJob {
                 }
                 Err(e) => {
                     if e.to_string() == NO_TRANSACTIONS_MSG {
-                        tracing::info!("MarkAndListPendingTransactions: {}", NO_TRANSACTIONS_MSG);
+                        tracing::info!(
+                            "MarkAndListPendingTransactions: {} for {}",
+                            NO_TRANSACTIONS_MSG,
+                            self.network
+                        );
                     } else {
                         tracing::error!("Error: {:?}", e);
                     }
@@ -142,7 +152,7 @@ impl TransactionJob {
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
         let res = MarkAndListPendingTransactions::build_query(
             mark_and_list_pending_transactions::Variables {
-                network: None,
+                network: self.network.to_query_var(),
                 after: None,
                 first: Some(TRANSACTION_PAGE_SIZE),
                 mark_as_processing: Some(true),

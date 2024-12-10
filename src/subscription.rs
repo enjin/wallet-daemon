@@ -1,6 +1,8 @@
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::{panic};
+use std::{fmt, panic};
 use subxt::client::ClientRuntimeUpdater;
+use subxt::dynamic::At;
 use subxt::ext::subxt_core;
 use subxt::{OnlineClient, PolkadotConfig};
 use subxt_core::config::substrate;
@@ -11,6 +13,48 @@ pub struct SubscriptionJob {
     params: Arc<SubscriptionParams>,
 }
 
+#[derive(Debug, Clone)]
+pub enum Network {
+    EnjinRelay,
+    CanaryRelay,
+    EnjinMatrix,
+    CanaryMatrix,
+}
+
+impl Network {
+    pub fn to_query_var(&self) -> Option<String> {
+        match self {
+            Network::EnjinRelay => Some("relay".to_string()),
+            Network::CanaryRelay => Some("relay".to_string()),
+            _ => Some("matrix".to_string()),
+        }
+    }
+}
+
+impl fmt::Display for Network {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Network::EnjinRelay => write!(f, "Enjin Relaychain"),
+            Network::CanaryRelay => write!(f, "Canary Relaychain"),
+            Network::EnjinMatrix => write!(f, "Enjin Matrixchain"),
+            Network::CanaryMatrix => write!(f, "Canary Matrixchain"),
+        }
+    }
+}
+
+impl FromStr for Network {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "enjin" => Ok(Network::EnjinRelay),
+            "matrix-enjin" => Ok(Network::EnjinMatrix),
+            "canary" => Ok(Network::CanaryRelay),
+            "matrix" => Ok(Network::CanaryMatrix),
+            _ => Err(format!("Unknown network: {}", s)),
+        }
+    }
+}
+
 impl SubscriptionJob {
     pub fn new(params: Arc<SubscriptionParams>) -> Self {
         Self { params }
@@ -19,10 +63,20 @@ impl SubscriptionJob {
     pub fn create_job(rpc: Arc<OnlineClient<PolkadotConfig>>) -> SubscriptionJob {
         let block_header = Arc::new(Mutex::new(None));
         let spec_version = Arc::new(Mutex::new(None));
+
+        let system_version = rpc
+            .constants()
+            .at(&subxt::dynamic::constant("System", "Version"))
+            .unwrap();
+        let system_version = system_version.to_value().unwrap();
+        let spec_name = system_version.at("spec_name").unwrap();
+        let network = Network::from_str(spec_name.as_str().unwrap()).unwrap();
+
         let subscription = Arc::new(SubscriptionParams {
             rpc,
             block_header: Arc::clone(&block_header),
             spec_version: Arc::clone(&spec_version),
+            network: Arc::clone(&Arc::new(network)),
         });
 
         SubscriptionJob::new(subscription)
@@ -51,6 +105,7 @@ pub struct SubscriptionParams {
     rpc: Arc<OnlineClient<PolkadotConfig>>,
     block_header: Arc<Mutex<Option<substrate::SubstrateHeader<u32, substrate::BlakeTwo256>>>>,
     spec_version: Arc<Mutex<Option<u32>>>,
+    network: Arc<Network>,
 }
 
 impl SubscriptionParams {
@@ -64,7 +119,11 @@ impl SubscriptionParams {
             match updater.apply_update(update) {
                 Ok(()) => {
                     *spec_version = Some(version);
-                    tracing::info!("Upgrade to specVersion: {} successful", version)
+                    tracing::info!(
+                        "{} has been upgraded to specVersion {} successfully",
+                        self.network,
+                        version
+                    )
                 }
                 Err(e) => match *spec_version {
                     Some(v) => {
@@ -73,14 +132,19 @@ impl SubscriptionParams {
                         }
 
                         tracing::error!(
-                            "Upgrade to specVersion {} failed {:?}. Please restart your daemon.",
+                            "{} has failed to upgrade to specVersion {} with error {:?}. Please restart your daemon.",
+                            self.network,
                             version,
                             e
                         );
                     }
                     None => {
                         *spec_version = Some(version);
-                        tracing::info!("Using specVersion {} to sign transactions", version);
+                        tracing::info!(
+                            "Using specVersion {} to sign transactions for {}",
+                            version,
+                            self.network
+                        );
                     }
                 },
             };
@@ -97,7 +161,10 @@ impl SubscriptionParams {
                 Ok(b) => b,
                 Err(e) => {
                     if e.is_disconnected_will_reconnect() {
-                        tracing::warn!("Lost connection with the RPC node, reconnecting...");
+                        tracing::warn!(
+                            "Lost connection with {} rpc node, reconnecting...",
+                            self.network
+                        );
                     }
 
                     continue;
@@ -105,7 +172,8 @@ impl SubscriptionParams {
             };
 
             tracing::info!(
-                "Current finalized block #{}: {}",
+                "Current finalized block for {}: #{} ({})",
+                self.network,
                 block.number(),
                 block.hash()
             );
@@ -122,5 +190,9 @@ impl SubscriptionParams {
         let block_header_lock = self.block_header.lock().unwrap();
 
         block_header_lock.clone().unwrap()
+    }
+
+    pub fn get_network(&self) -> Arc<Network> {
+        Arc::clone(&self.network)
     }
 }
