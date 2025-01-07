@@ -30,7 +30,7 @@ serde_json = "1.0.134"
 hex = "0.4.3"
 tracing-subscriber = "0.3.19"
 config = "0.15.4"
-sp-core = { version = "34.0.0", default-features = false, features = [
+sp-core = { version = "35.0.0", default-features = false, features = [
     "std",
 ] }
 bip39 = { version = "2.0.0", features = ["rand"] }
