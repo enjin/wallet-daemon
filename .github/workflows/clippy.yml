@@ -5,7 +5,7 @@ on:
 jobs:
   clippy:
     runs-on: ubuntu-latest
-    permissions: write
+    permissions: write-all
 
     steps:
       - name: Checkou repository
