@@ -2,12 +2,12 @@ name: Publish docker image to DockerHub
 
 on:
   workflow_dispatch:
-    
   release:
     types: [created]
 
 jobs:
   publish:
+    name: Build
     runs-on: ubuntu-latest
     permissions:
       id-token: write

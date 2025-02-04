@@ -1,15 +1,13 @@
-name: Test builds docker
-
+name: Test Docker Build
 on:
-  pull_request:
   push:
 
 jobs:
   build:
+    name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build docker image
+      - name: Build
         run: |
           docker build .

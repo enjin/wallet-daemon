@@ -5,12 +5,13 @@ on:
 
 jobs:
   pr_agent_job:
+    name: Run agent
     runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: write
       contents: write
-    name: Run agent
+
     steps:
       - name: PR Agent action step
         id: pragent
