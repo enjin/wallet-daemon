@@ -1,13 +1,15 @@
-on: push
-name: Clippy Check
+name: Clippy and Format
+on:
+  push:
+
 jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: auguwu/clippy-action@1.4.0
         with:
           token: ${{secrets.GITHUB_TOKEN}}

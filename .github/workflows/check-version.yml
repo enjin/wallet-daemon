@@ -1,8 +1,6 @@
-name: Check Version
-
+name: Check Package Version
 on:
   push:
-  pull_request:
 
 concurrency:
   group: check-version-${{ github.event.pull_request.number || github.ref }}
@@ -13,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: check
+      - name: Check
         run: |
           # Fetch the version from Cargo.toml
           version=$(grep -m 1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
