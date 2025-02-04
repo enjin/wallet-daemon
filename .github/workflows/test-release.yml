@@ -12,9 +12,10 @@ jobs:
       - uses: Homebrew/actions/setup-homebrew@master
 
       - name: Install dependencies
-        run: brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu mingw-w64
+      - run: brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu mingw-w64
 
       - uses: actions/checkout@v4
+
       - name: Build
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo build --release
