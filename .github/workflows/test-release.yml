@@ -1,38 +1,16 @@
-name: Test builds releases
+name: Test Builds Binaries
 on:
   pull_request:
   push:
 
 jobs:
-  build-linux:
-    name: Build x86_64-unknown-linux-gnu
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: cargo build --release
-
-  build-windows:
-    name: Build x86_64-pc-windows-gnu
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: rust-build/rust-build.action@v1.4.5
-        with:
-          RUSTTARGET: "x86_64-pc-windows-gnu"
-          UPLOAD_MODE: "none"
-          TOOLCHAIN_VERSION: "1.82"
-          SRC_DIR: src
-          ARCHIVE_TYPES: "zip"
-
-  build-mac:
-    name: Build x86_64-apple-darwin
+  build:
+    name: Test it builds binaries
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: "1.82"
-          target: x86_64-apple-darwin
-          default: true
-          override: true
+          toolchain: "1.83"
+          target: "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"
       - run: cargo build --release
