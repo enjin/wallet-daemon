@@ -7,8 +7,9 @@ jobs:
     name: Audit
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
-      contents: write
+      issues: write
+      pull-requests: read
+      contents: read
       
     steps:
       - uses: actions/checkout@v4
