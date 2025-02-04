@@ -1,77 +1,80 @@
-name: Build releases
+name: Build and Release
 on:
   release:
     types: [created]
 
 jobs:
-  release-linux:
-    name: Release x86_64-unknown-linux-gnu
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: cargo build --release
-      - name: Archive Release
-        uses: vimtor/action-zip@v1.2
-        with:
-          files: target/release/wallet-daemon
-          dest: target/release/wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
-      - name: Linux Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: target/release/wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
-
-  release-windows:
-    name: Release x86_64-pc-windows-gnu
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Compile and release
-        if: "!startsWith(github.ref, 'refs/tags/')"
-        run: echo 'UPLOAD_MODE=none' >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@v4
-      - uses: rust-build/rust-build.action@v1.4.5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          RUSTTARGET: "x86_64-pc-windows-gnu"
-          UPLOAD_MODE: ${{ env.UPLOAD_MODE }}
-          TOOLCHAIN_VERSION: "1.82"
-          SRC_DIR: src
-          ARCHIVE_TYPES: "zip"
-
-  release-mac:
+  build:
+    name: Build
     runs-on: macos-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install latest rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: "1.82"
-          target: x86_64-apple-darwin
-          default: true
-          override: true
-      - name: Build for mac
+      - name: Set up homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Install dependencies
+        run: brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu mingw-w64
+
+      - name: Checkout repository
+      - uses: actions/checkout@v4
+
+      - name: Setup toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build binaries
         run: cargo build --release
-      - name: Archive Release
+
+      - name: Archive apple arm64
         uses: vimtor/action-zip@v1.2
         with:
-          files: target/release/wallet-daemon
-          dest: target/release/wallet-daemon_${{github.ref_name}}_x86_64-apple-darwin.zip
-      - name: Linux Release
+          files: target/aarch64-apple-darwin/release/wallet-daemon
+          dest: wallet-daemon_${{github.ref_name}}_arm64-apple-darwin.zip
+
+      - name: Archive apple x86_64
+        uses: vimtor/action-zip@v1.2
+        with:
+          files: target/x86_64-apple-darwin/release/wallet-daemon
+          dest: wallet-daemon_${{github.ref_name}}_x86_64-apple-darwin.zip
+
+      - name: Archive windows x86_64
+        uses: vimtor/action-zip@v1.2
+        with:
+          files: target/x86_64-pc-windows-gnu/release/wallet-daemon
+          dest: wallet-daemon_${{github.ref_name}}_x86_64-pc-windows-gnu.zip
+
+      - name: Archive linux x86_64
+        uses: vimtor/action-zip@v1.2
+        with:
+          files: target/x86_64-unknown-linux-gnu/release/wallet-daemon
+          dest: wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
+
+      - name: Upload artifacts apple arm64
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: target/release/wallet-daemon_${{github.ref_name}}_x86_64-apple-darwin.zip
+          files: wallet-daemon_${{github.ref_name}}_arm64-apple-darwin.zip
+
+      - name: Upload artifacts apple x86_64
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: wallet-daemon_${{github.ref_name}}_x86_64-apple-darwin.zip
+
+      - name: Upload artifacts windows x86_64
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: wallet-daemon_${{github.ref_name}}_x86_64-pc-windows-gnu.zip
+
+      - name: Upload artifacts linux x86_64
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: wallet-daemon_${{github.ref_name}}_x86_64-unknown-linux-gnu.zip
