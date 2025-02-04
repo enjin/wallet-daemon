@@ -8,6 +8,12 @@ jobs:
     permissions: write-all
 
     steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Install dependencies
+        run: brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu mingw-w64
+
       - name: Checkou repository
         uses: actions/checkout@v4
 
