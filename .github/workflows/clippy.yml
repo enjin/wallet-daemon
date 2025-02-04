@@ -5,7 +5,9 @@ on:
 jobs:
   clippy:
     runs-on: macos-latest
-    permissions: write-all
+    permissions:
+      pull-requests: write
+      contents: write
 
     steps:
       - name: Set up Homebrew

@@ -10,6 +10,7 @@ jobs:
       issues: write
       pull-requests: write
       contents: write
+
     name: Run agent
     steps:
       - name: PR Agent action step
