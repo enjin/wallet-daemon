@@ -4,6 +4,7 @@ on:
 
 jobs:
   clippy:
+    name: Clippy
     runs-on: macos-latest
     permissions:
       pull-requests: write
