@@ -9,8 +9,7 @@ use reqwest::{Client, Response};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use subxt::config::substrate::{BlakeTwo256, SubstrateHeader};
-use subxt::config::{DefaultExtrinsicParamsBuilder as Params, Header};
+use subxt::config::DefaultExtrinsicParamsBuilder;
 use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
@@ -104,7 +103,6 @@ impl TransactionJob {
             TransactionProcessor::new(
                 rpc,
                 Client::new(),
-                block_sub,
                 keypair,
                 receiver,
                 platform_url,
@@ -207,7 +205,6 @@ impl TransactionJob {
 pub struct TransactionProcessor {
     chain_client: Arc<OnlineClient<PolkadotConfig>>,
     platform_client: Client,
-    block_sub: Arc<SubscriptionParams>,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
     platform_url: String,
@@ -218,7 +215,6 @@ impl TransactionProcessor {
     pub(crate) fn new(
         rpc: Arc<OnlineClient<PolkadotConfig>>,
         client: Client,
-        block_sub: Arc<SubscriptionParams>,
         keypair: Keypair,
         receiver: Receiver<Vec<TransactionRequest>>,
         platform_url: String,
@@ -227,7 +223,6 @@ impl TransactionProcessor {
         Self {
             chain_client: rpc,
             platform_client: client,
-            block_sub,
             keypair,
             receiver,
             platform_url,
@@ -244,7 +239,6 @@ impl TransactionProcessor {
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         request_id: i64,
         payload: Vec<u8>,
-        block_header: SubstrateHeader<u32, BlakeTwo256>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let public_key = hex::encode(keypair.public_key().0);
         let chain_nonce = chain_client
@@ -265,9 +259,10 @@ impl TransactionProcessor {
             tracker.put(public_key.clone(), correct_nonce + 1);
         }
 
-        let params = Params::new()
+        let latest_block = chain_client.blocks().at_latest().await?;
+        let params = DefaultExtrinsicParamsBuilder::new()
             .nonce(correct_nonce)
-            .mortal(&block_header, 64)
+            .mortal(64)
             .build();
 
         // We probably need to try to create the tx (to check if it is valid before grabbing a nonce for it
@@ -277,14 +272,10 @@ impl TransactionProcessor {
             .await?;
 
         let encoded_tx = hex::encode(signed_tx.encoded());
-        tracing::info!("Request: #{} - Nonce: {} - Mortality: 64 - BlockNumber: #{} - BlockHash: 0x{} - Genesis: 0x{} - SpecVersion: {} - TxVersion: {} - Extrinsic: 0x{}",
+        tracing::info!(
+            "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
             request_id,
             correct_nonce,
-            block_header.number,
-            hex::encode(block_header.hash().0),
-            hex::encode(chain_client.genesis_hash().0),
-            chain_client.runtime_version().spec_version,
-            chain_client.runtime_version().transaction_version,
             encoded_tx
         );
 
@@ -303,7 +294,7 @@ impl TransactionProcessor {
                 TxStatus::Invalid { message } => {
                     tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
                 }
-                TxStatus::Broadcasted { num_peers: _ } => {
+                TxStatus::Broadcasted => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
                     let tx_hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
 
@@ -316,7 +307,7 @@ impl TransactionProcessor {
                             state: "BROADCAST".to_string(),
                             hash: Some(tx_hash),
                             signer: None,
-                            signed_at: Some(block_header.number as i64),
+                            signed_at: Some(latest_block.number() as i64),
                         },
                     )
                     .await;
@@ -357,7 +348,6 @@ impl TransactionProcessor {
     async fn transaction_handler(
         chain_client: Arc<OnlineClient<PolkadotConfig>>,
         platform_client: Client,
-        block_subscription: Arc<SubscriptionParams>,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         platform_url: String,
@@ -385,7 +375,6 @@ impl TransactionProcessor {
             hex::encode(signer.public_key().0)
         );
 
-        let block_header = block_subscription.get_block_header();
         let res = backoff::future::retry(Self::default_backoff(), || async {
             match Self::submit_and_watch(
                 platform_client.clone(),
@@ -396,7 +385,6 @@ impl TransactionProcessor {
                 Arc::clone(&nonce_tracker),
                 request_id,
                 payload.clone(),
-                block_header.clone(),
             )
             .await
             {
@@ -431,6 +419,7 @@ impl TransactionProcessor {
 
         let signing_account = hex::encode(signer.public_key().0);
         let account = format!("0x{signing_account}");
+        let latest_block = chain_client.blocks().at_latest().await.unwrap();
 
         match res {
             Ok(hash) => {
@@ -453,7 +442,7 @@ impl TransactionProcessor {
                         state: "EXECUTED".to_string(),
                         hash: Some(format!("0x{}", hash)),
                         signer: Some(account),
-                        signed_at: Some(block_header.number as i64),
+                        signed_at: Some(latest_block.number() as i64),
                     },
                 )
                 .await;
@@ -505,7 +494,6 @@ impl TransactionProcessor {
                 tokio::spawn(Self::transaction_handler(
                     Arc::clone(&self.chain_client),
                     self.platform_client.clone(),
-                    self.block_sub.clone(),
                     self.keypair.clone(),
                     Arc::clone(&nonce_tracker),
                     self.platform_url.clone(),
