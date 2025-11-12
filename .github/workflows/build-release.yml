@@ -5,45 +5,75 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
     strategy:
       matrix:
-        toolchain: ["arm64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-gnu", "x86_64-unknown-linux-gnu"]
-
-    name: Build ${{ matrix.toolchain }}
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-gnu
+    
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.target }}
+    
     steps:
-      - name: Set up homebrew
-        uses: Homebrew/actions/setup-homebrew@master
-
-      - name: Install dependencies
-        run: brew install messense/macos-cross-toolchains/x86_64-unknown-linux-gnu mingw-w64 openssl
-
-      - name: Configure OpenSSL for cross-compilation
-        run: |
-          export OPENSSL_DIR=$(brew --prefix openssl)
-          export PKG_CONFIG_ALLOW_CROSS=1
-          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo builds
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config perl nasm
+
+      - name: Install dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install nasm || true
+
+      - name: Setup MSYS2 (Windows-gnu)
+        if: startsWith(matrix.os, 'windows')
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          msystem: MINGW64
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkg-config
+            perl
+            nasm
 
       - name: Build binaries
+        shell: ${{ startsWith(matrix.os, 'windows') && 'msys2 {0}' || 'bash' }}
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+          CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
+          AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
         run: cargo build --release
 
-      - name: Archive ${{ matrix.toolchain }}
+      - name: Archive ${{ matrix.target }}
         uses: vimtor/action-zip@v1.2
         with:
-          files: target/${{ matrix.toolchain }}/release/wallet-daemon
-          dest: wallet-daemon_${{github.ref_name}}_${{ matrix.toolchain }}.zip
+          files: target/${{ matrix.target }}/release/wallet-daemon${{ startsWith(matrix.os, 'windows') && '.exe' || '' }}
+          dest: wallet-daemon_${{github.ref_name}}_${{ matrix.target }}.zip
 
-      - name: Upload artifacts ${{ matrix.toolchain }}
+      - name: Upload artifacts ${{ matrix.target }}
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: wallet-daemon_${{github.ref_name}}_${{ matrix.toolchain }}.zip
+          files: wallet-daemon_${{github.ref_name}}_${{ matrix.target }}.zip
