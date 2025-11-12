@@ -66,8 +66,15 @@ impl SubscriptionJob {
             .at(&subxt::dynamic::constant("System", "Version"))
             .unwrap();
         let system_version = system_version.to_value().unwrap();
-        let spec_name = system_version.at("spec_name").unwrap();
-        let network = Network::from_str(spec_name.as_str().unwrap()).unwrap();
+        let spec_name_value = system_version.at("spec_name").unwrap();
+
+        // Handle both cases: direct Primitive or Composite(Unnamed([...]))
+        let spec_name_str = spec_name_value
+            .as_str()
+            .or_else(|| spec_name_value.at(0).and_then(|v| v.as_str()))
+            .unwrap();
+
+        let network = Network::from_str(spec_name_str).unwrap();
 
         let subscription = Arc::new(SubscriptionParams {
             rpc,
