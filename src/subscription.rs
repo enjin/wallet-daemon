@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::{fmt, panic};
 use subxt::client::ClientRuntimeUpdater;
 use subxt::dynamic::At;
-use subxt::ext::subxt_core;
 use subxt::{OnlineClient, PolkadotConfig};
-use subxt_core::config::substrate;
 use tokio::task::JoinHandle;
 
 #[derive(Debug)]
@@ -61,7 +59,6 @@ impl SubscriptionJob {
     }
 
     pub fn create_job(rpc: Arc<OnlineClient<PolkadotConfig>>) -> SubscriptionJob {
-        let block_header = Arc::new(Mutex::new(None));
         let spec_version = Arc::new(Mutex::new(None));
 
         let system_version = rpc
@@ -74,7 +71,6 @@ impl SubscriptionJob {
 
         let subscription = Arc::new(SubscriptionParams {
             rpc,
-            block_header: Arc::clone(&block_header),
             spec_version: Arc::clone(&spec_version),
             network: Arc::clone(&Arc::new(network)),
         });
@@ -83,13 +79,11 @@ impl SubscriptionJob {
     }
 
     pub fn start(&self) -> JoinHandle<()> {
-        let block_sub = Arc::clone(&self.params);
         let runtime_sub = Arc::clone(&self.params);
         let updater = runtime_sub.rpc.updater();
 
         tokio::spawn(async move {
             tokio::select! {
-                _ = block_sub.block_subscription() => {}
                 _ = runtime_sub.runtime_subscription(updater) => {}
             }
         })
@@ -103,7 +97,6 @@ impl SubscriptionJob {
 #[derive(Debug)]
 pub struct SubscriptionParams {
     rpc: Arc<OnlineClient<PolkadotConfig>>,
-    block_header: Arc<Mutex<Option<substrate::SubstrateHeader<u32, substrate::BlakeTwo256>>>>,
     spec_version: Arc<Mutex<Option<u32>>>,
     network: Arc<Network>,
 }
@@ -151,45 +144,6 @@ impl SubscriptionParams {
         }
 
         tracing::error!("Runtime update stream ended unexpectedly");
-    }
-
-    async fn block_subscription(self: Arc<Self>) {
-        let mut blocks_sub = self.rpc.blocks().subscribe_finalized().await.unwrap();
-
-        while let Some(block) = blocks_sub.next().await {
-            let block = match block {
-                Ok(b) => b,
-                Err(e) => {
-                    if e.is_disconnected_will_reconnect() {
-                        tracing::warn!(
-                            "Lost connection with {} rpc node, reconnecting...",
-                            self.network
-                        );
-                    }
-
-                    continue;
-                }
-            };
-
-            tracing::info!(
-                "Current finalized block for {}: #{} ({})",
-                self.network,
-                block.number(),
-                block.hash()
-            );
-
-            let mut block_header = self.block_header.lock().unwrap();
-
-            *block_header = Some(block.header().clone());
-        }
-
-        tracing::error!("Block subscription stream ended unexpectedly");
-    }
-
-    pub fn get_block_header(&self) -> substrate::SubstrateHeader<u32, substrate::BlakeTwo256> {
-        let block_header_lock = self.block_header.lock().unwrap();
-
-        block_header_lock.clone().unwrap()
     }
 
     pub fn get_network(&self) -> Arc<Network> {
