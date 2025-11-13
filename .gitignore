@@ -1,8 +1,10 @@
 debug/
 target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 .idea
 .vscode
 sign_binary.sh
+AGENTS.md
+store
+docker-compose.*.yml
