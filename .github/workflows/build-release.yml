@@ -38,15 +38,7 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         run: >-
           sudo apt-get update && sudo apt-get install -y
-          build-essential pkg-config perl nasm
-
-      - name: Install dependencies (macOS)
-        if: startsWith(matrix.os, 'macos')
-        run: brew install nasm || true
-
-      - name: Install dependencies (Windows)
-        if: startsWith(matrix.os, 'windows')
-        run: choco install -y nasm strawberryperl
+          build-essential pkg-config
 
       - name: Build binaries
         env:

@@ -3,7 +3,7 @@
 FROM rust:1.85-bookworm as builder
 LABEL description="This is the build stage for the wallet. Here we create the binary."
 
-RUN apt-get update && apt-get install -y libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /wallet
 
@@ -20,11 +20,11 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim as runner
 LABEL description="This is the 2nd stage: a very small image where we copy the wallet binary."
-# reqwest needs libssl and curl is needed to install the ca-certificates
+# rustls-based reqwest needs CA certificates; curl is used to install AWS CLI
 # awscli is needed for the start script to retrieve the secrets
 RUN apt-get update && \
     apt-get install -y \
-    libssl-dev \
+    ca-certificates \
     dos2unix \
     jq \
     curl \
