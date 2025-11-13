@@ -16,10 +16,9 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-gnu
-    
+
     runs-on: ${{ matrix.os }}
     name: Build ${{ matrix.target }}
-    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,7 +35,9 @@ jobs:
 
       - name: Install dependencies (Linux)
         if: startsWith(matrix.os, 'ubuntu')
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config perl nasm
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          build-essential pkg-config perl nasm
 
       - name: Install dependencies (macOS)
         if: startsWith(matrix.os, 'macos')
@@ -67,7 +68,9 @@ jobs:
       - name: Archive ${{ matrix.target }}
         uses: vimtor/action-zip@v1.2
         with:
-          files: target/${{ matrix.target }}/release/wallet-daemon${{ startsWith(matrix.os, 'windows') && '.exe' || '' }}
+          files: >-
+            target/${{ matrix.target }}/release/wallet-daemon${{
+            startsWith(matrix.os, 'windows') && '.exe' || '' }}
           dest: wallet-daemon_${{github.ref_name}}_${{ matrix.target }}.zip
 
       - name: Upload artifacts ${{ matrix.target }}
