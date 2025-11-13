@@ -56,13 +56,20 @@ jobs:
             perl
             nasm
 
-      - name: Build binaries
-        shell: ${{ startsWith(matrix.os, 'windows') && 'msys2 {0}' || 'bash' }}
+      - name: Build binaries (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: msys2 {0}
         env:
           CARGO_BUILD_TARGET: ${{ matrix.target }}
           CC_x86_64_pc_windows_gnu: x86_64-w64-mingw32-gcc
           AR_x86_64_pc_windows_gnu: x86_64-w64-mingw32-ar
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build --release
+
+      - name: Build binaries (Unix)
+        if: ${{ !startsWith(matrix.os, 'windows') }}
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
         run: cargo build --release
 
       - name: Archive ${{ matrix.target }}
