@@ -1,5 +1,5 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
-use crate::graphql::sign_transactions::SignTransactionInput;
+use crate::graphql::sign_transactions::{SignTransactionInput, TransactionStateEnum};
 use crate::graphql::{
     populate_managed_wallets, sign_transactions, PopulateManagedWallets, SignTransactions,
 };
@@ -20,26 +20,21 @@ impl PlatformExponentialBuilder {
     }
 }
 
-pub struct Transaction {
-    pub(crate) id: String,
-    pub(crate) state: String,
-    pub(crate) hash: Option<String>,
-    pub(crate) signer: Option<String>,
-    pub(crate) signed_at: Option<i64>,
-}
-
 pub async fn sign_transactions(
     client: Client,
     platform_url: String,
     platform_token: String,
     transaction: SignTransactionInput,
 ) {
-    // let transaction_state = match transaction.state.as_str() {
-    //     "EXECUTED" => sign_transactions::TransactionState::EXECUTED,
-    //     "BROADCAST" => sign_transactions::TransactionState::BROADCAST,
-    //     _ => sign_transactions::TransactionState::ABANDONED,
-    // };
-    // let (uuid, state) = (transaction.uuid.clone(), transaction.state.clone());
+    let (uuid, state) = (
+        transaction.uuid.clone(),
+        match transaction.state {
+            TransactionStateEnum::BROADCAST => "BROADCAST",
+            TransactionStateEnum::EXECUTED => "EXECUTED",
+            TransactionStateEnum::ABANDONED => "ABANDONED",
+            _ => "unknown",
+        },
+    );
 
     let request_body = SignTransactions::build_query(sign_transactions::Variables {
         transactions: vec![transaction],
@@ -63,11 +58,7 @@ pub async fn sign_transactions(
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                // tracing::info!(
-                //     "Updated transaction #{} with state: {:?}",
-                //     uuid,
-                //     state
-                // );
+                tracing::info!("Updated transaction #{} with state: {:?}", uuid, state);
             }
             Err(e) => {
                 tracing::error!("Error decoding response of the platform: {:?}", e);

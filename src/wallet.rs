@@ -13,7 +13,6 @@ use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 const ACCOUNT_POLLER_MS: u64 = 6000;
-const ACCOUNT_PAGE_SIZE: i64 = 200;
 
 #[derive(Clone)]
 pub struct DeriveWalletRequest {

@@ -5,11 +5,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct Platform {
     packages: HashMap<String, Value>,
 }
 
+#[allow(dead_code)]
 async fn get_packages(platform_url: String) -> Result<bool, Box<dyn std::error::Error>> {
     let platform = platform_url.replace("/graphql", "");
 

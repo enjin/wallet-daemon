@@ -23,7 +23,6 @@ use tokio::time::{interval, sleep};
 const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const BLOCK_TIME_MS: u64 = 12000;
 const TRANSACTION_POLLER_MS: u64 = 6000;
-const TRANSACTION_PAGE_SIZE: i64 = 25;
 
 struct Wrapper(Vec<u8>);
 
@@ -241,7 +240,6 @@ impl TransactionProcessor {
         platform_token: String,
         chain_client: Arc<OnlineClient<PolkadotConfig>>,
         keypair: Keypair,
-        nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         request_id: String,
         payload: Vec<u8>,
         correct_nonce: u64,
@@ -280,8 +278,6 @@ impl TransactionProcessor {
                 }
                 TxStatus::Broadcasted => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
-
-                    let tx_hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
 
                     platform_client::sign_transactions(
                         platform_client.clone(),
@@ -413,7 +409,6 @@ impl TransactionProcessor {
                     platform_token.clone(),
                     Arc::clone(&chain_client),
                     signer.clone(),
-                    Arc::clone(&nonce_tracker),
                     request_id.clone(),
                     payload.clone(),
                     correct_nonce,
@@ -446,7 +441,6 @@ impl TransactionProcessor {
 
             let signing_account = hex::encode(signer.public_key().0);
             let account = format!("0x{signing_account}");
-            let latest_block = chain_client.blocks().at_latest().await.unwrap();
 
             match res {
                 Ok(SubmitResult {
