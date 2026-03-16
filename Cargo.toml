@@ -21,8 +21,8 @@ tokio = { version = "1.47.1", features = [
     "rt-multi-thread",
     "signal",
 ] }
-graphql_client = "0.14.0"
-reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+graphql_client = "0.16.0"
+reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
 serde = { version = "1.0.219", default-features = false, features = ["derive"]}
 serde_json = "1.0.143"
 hex = "0.4.3"

@@ -80,12 +80,11 @@ pub async fn set_wallet_account(
     client: Client,
     platform_url: String,
     platform_token: String,
-    wallet_id: i64,
     external_id: String,
     account: String,
 ) {
     let request_body = SetWalletAccount::build_query(set_wallet_account::Variables {
-        id: wallet_id,
+        id: 0, // TODO: remove
         account: account.clone(),
     });
 
@@ -107,9 +106,7 @@ pub async fn set_wallet_account(
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!(
-                    "Updated wallet {wallet_id} (externalId: {external_id}) to {account}"
-                );
+                tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
             }
             Err(e) => tracing::error!(
                 "Error decoding body {:?} of response to submitted account",

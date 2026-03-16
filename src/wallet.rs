@@ -1,5 +1,7 @@
 use crate::graphql::{get_pending_managed_wallet_creations, GetPendingManagedWalletCreations};
 use crate::platform_client;
+use crate::wallet::get_pending_managed_wallet_creations::Chain;
+use crate::wallet::get_pending_managed_wallet_creations::Network;
 use graphql_client::GraphQLQuery;
 use reqwest::{Client, Response};
 use std::time::Duration;
@@ -14,19 +16,19 @@ const ACCOUNT_PAGE_SIZE: i64 = 200;
 
 #[derive(Clone)]
 pub struct DeriveWalletRequest {
-    request_id: i64,
     external_id: String,
 }
 
-impl TryFrom<get_pending_wallets::GetPendingWalletsGetPendingWalletsEdges> for DeriveWalletRequest {
+impl TryFrom<get_pending_managed_wallet_creations::GetPendingManagedWalletCreationsResultData>
+    for DeriveWalletRequest
+{
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
     fn try_from(
-        edge: get_pending_wallets::GetPendingWalletsGetPendingWalletsEdges,
+        data: get_pending_managed_wallet_creations::GetPendingManagedWalletCreationsResultData,
     ) -> Result<Self, Self::Error> {
         Ok(Self {
-            external_id: edge.node.external_id.ok_or("No external id")?,
-            request_id: edge.node.id,
+            external_id: data.external_id.ok_or("No external id")?,
         })
     }
 }
@@ -111,10 +113,15 @@ impl DeriveWalletJob {
     async fn get_pending_wallets(
         &self,
     ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res = GetPendingManagedWalletCreations::build_query(get_pending_wallets::Variables {
-            after: None,
-            first: Some(ACCOUNT_PAGE_SIZE),
-        });
+        let res = GetPendingManagedWalletCreations::build_query(
+            get_pending_managed_wallet_creations::Variables {
+                // TODO: get these from the config
+                network: Network::CANARY,
+                chain: Chain::MATRIX,
+                limit: 0,
+                cursor: None,
+            },
+        );
 
         let res = self
             .client
@@ -131,25 +138,24 @@ impl DeriveWalletJob {
         &self,
         pending_wallets_res: Response,
     ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let response_body: graphql_client::Response<get_pending_wallets::ResponseData> =
-            pending_wallets_res.json().await?;
+        let response_body: graphql_client::Response<
+            get_pending_managed_wallet_creations::ResponseData,
+        > = pending_wallets_res.json().await?;
         let response_data = response_body.data.ok_or("No data in response")?;
         let derive_wallets_req = response_data
-            .get_pending_wallets
+            .result
             .ok_or("No pending wallets in response")?;
 
         Ok(derive_wallets_req
-            .edges
+            .data
             .into_iter()
             .filter_map(|p| {
-                p.and_then(|p| {
-                    DeriveWalletRequest::try_from(p)
-                        .map_err(|e| {
-                            tracing::info!("Error: {:?}", e);
-                            e
-                        })
-                        .ok()
-                })
+                DeriveWalletRequest::try_from(p)
+                    .map_err(|e| {
+                        tracing::info!("Error: {:?}", e);
+                        e
+                    })
+                    .ok()
             })
             .collect())
     }
@@ -185,10 +191,7 @@ impl DeriveWalletProcessor {
         keypair: Keypair,
         platform_url: String,
         platform_token: String,
-        DeriveWalletRequest {
-            request_id,
-            external_id,
-        }: DeriveWalletRequest,
+        DeriveWalletRequest { external_id }: DeriveWalletRequest,
     ) {
         let derive_junction = match external_id.parse::<i64>() {
             Ok(_) => DeriveJunction::soft(external_id.parse::<i64>().unwrap()),
@@ -202,7 +205,6 @@ impl DeriveWalletProcessor {
             client,
             platform_url,
             platform_token,
-            request_id,
             external_id,
             format!("0x{derived_key}"),
         )
