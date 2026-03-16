@@ -56,7 +56,7 @@ pub async fn set_multitenant(account: String, platform_url: String, platform_tok
     // let is_tenant = get_packages(platform_url.clone())
     //     .await
     //     .expect("We could not connect to Enjin Platform, check your connection or the url");
-    let is_tenant = true;
+    let is_tenant = false;
 
     if is_tenant {
         let updated = update_user(account.clone(), platform_url.clone(), platform_token)

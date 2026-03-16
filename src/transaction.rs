@@ -26,6 +26,13 @@ const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
 struct Wrapper(Vec<u8>);
+
+struct SubmitResult {
+    hash: String,
+    correct_nonce: u64,
+    encoded_tx: String,
+}
+
 impl subxt::tx::Payload for Wrapper {
     fn encode_call_data_to(
         &self,
@@ -237,39 +244,18 @@ impl TransactionProcessor {
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         request_id: String,
         payload: Vec<u8>,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let public_key = hex::encode(keypair.public_key().0);
-        let chain_nonce = chain_client
-            .tx()
-            .account_nonce(&keypair.public_key().into())
-            .await
-            .unwrap();
-        let correct_nonce: u64;
-        {
-            let mut tracker = nonce_tracker.lock().unwrap();
-
-            let latest_nonce = tracker.get(&public_key).unwrap_or(&0u64);
-            correct_nonce = *latest_nonce.max(&chain_nonce);
-
-            let acc_format = trim_account(public_key.clone());
-            tracing::warn!("Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
-
-            tracker.put(public_key.clone(), correct_nonce + 1);
-        }
-
-        let latest_block = chain_client.blocks().at_latest().await?;
+        correct_nonce: u64,
+        encoded_tx: String,
+    ) -> Result<SubmitResult, Box<dyn std::error::Error + Send + Sync>> {
         let params = DefaultExtrinsicParamsBuilder::new()
             .nonce(correct_nonce)
             .mortal(64)
             .build();
 
-        // We probably need to try to create the tx (to check if it is valid before grabbing a nonce for it
         let signed_tx = chain_client
             .tx()
             .create_signed(&Wrapper(payload), &keypair, params)
             .await?;
-
-        let encoded_tx = hex::encode(signed_tx.encoded());
         tracing::info!(
             "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
             request_id,
@@ -316,19 +302,11 @@ impl TransactionProcessor {
                         request_id,
                         block.block_hash()
                     );
-                    platform_client::sign_transactions(
-                        platform_client.clone(),
-                        platform_url.clone(),
-                        platform_token.clone(),
-                        SignTransactionInput {
-                            uuid: request_id.clone(),
-                            signed_extrinsic: encoded_tx.clone(),
-                            nonce: correct_nonce as i64,
-                            state: TransactionStateEnum::EXECUTED,
-                        },
-                    )
-                    .await;
-                    return Ok(hex::encode(block.extrinsic_hash().0));
+                    return Ok(SubmitResult {
+                        hash: hex::encode(block.extrinsic_hash().0),
+                        correct_nonce,
+                        encoded_tx,
+                    });
                 }
                 TxStatus::NoLongerInBestBlock => {
                     tracing::error!("Transaction #{} no longer InBestBlock", request_id)
@@ -389,6 +367,45 @@ impl TransactionProcessor {
                 hex::encode(signer.public_key().0)
             );
 
+            let public_key = hex::encode(signer.public_key().0);
+            let chain_nonce = chain_client
+                .tx()
+                .account_nonce(&signer.public_key().into())
+                .await
+                .unwrap();
+            let correct_nonce: u64;
+            {
+                let mut tracker = nonce_tracker.lock().unwrap();
+                let latest_nonce = tracker.get(&public_key).unwrap_or(&0u64);
+                correct_nonce = *latest_nonce.max(&chain_nonce);
+                let acc_format = trim_account(public_key.clone());
+                tracing::warn!("Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
+                tracker.put(public_key.clone(), correct_nonce + 1);
+            }
+
+            let params = DefaultExtrinsicParamsBuilder::new()
+                .nonce(correct_nonce)
+                .mortal(64)
+                .build();
+            let signed_tx = match chain_client
+                .tx()
+                .create_signed(&Wrapper(payload.clone()), &signer, params)
+                .await
+            {
+                Ok(tx) => tx,
+                Err(e) => {
+                    tracing::error!("Failed to create signed transaction: {:?}", e);
+                    continue;
+                }
+            };
+            let encoded_tx = hex::encode(signed_tx.encoded());
+            tracing::info!(
+                "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
+                request_id,
+                correct_nonce,
+                encoded_tx
+            );
+
             let res = backoff::future::retry(Self::default_backoff(), || async {
                 match Self::submit_and_watch(
                     platform_client.clone(),
@@ -399,21 +416,17 @@ impl TransactionProcessor {
                     Arc::clone(&nonce_tracker),
                     request_id.clone(),
                     payload.clone(),
+                    correct_nonce,
+                    encoded_tx.clone(),
                 )
                 .await
                 {
-                    Ok(hash) => Ok(hash),
+                    Ok(result) => Ok(result),
                     Err(e) => {
-                        // ServerError(1010) - Invalid Transaction - Transaction is outdated
-                        // ServerError(1012) - Transaction is temporally banned
-                        // ServerError(1013) - Transaction already imported
-                        // ServerError(1014) - Priority is too low
-                        // We will reset the nonce if any error occurs
                         nonce_tracker
                             .lock()
                             .unwrap()
                             .put(hex::encode(signer.public_key().0), 0);
-
                         tracing::info!(
                             "Resetting cached nonce from {} to 0",
                             hex::encode(signer.public_key().0)
@@ -436,28 +449,33 @@ impl TransactionProcessor {
             let latest_block = chain_client.blocks().at_latest().await.unwrap();
 
             match res {
-                Ok(hash) => {
-                    // let trimmed_hash = trim_account(hash.clone());
-                    // let trimmed_account = trim_account(account.clone());
+                Ok(SubmitResult {
+                    hash,
+                    correct_nonce,
+                    encoded_tx,
+                }) => {
+                    let trimmed_hash = trim_account(hash.clone());
+                    let trimmed_account = trim_account(account.clone());
 
-                    // tracing::info!(
-                    //     "Transaction #{} hash {} signed with account {} setting it to EXECUTED",
-                    //     request_id,
-                    //     trimmed_hash,
-                    //     trimmed_account
-                    // );
+                    tracing::info!(
+                        "Transaction #{} hash {} signed with account {} setting it to EXECUTED",
+                        request_id,
+                        trimmed_hash,
+                        trimmed_account
+                    );
 
-                    // platform_client::sign_transactions(
-                    //     platform_client.clone(),
-                    //     platform_url.clone(),
-                    //     platform_token.clone(),
-                    //     SignTransactionInput {
-                    //         uuid: request_id.clone(),
-                    //         signed_extrinsic: encoded_tx.clone(),
-                    //         nonce: correct_nonce as i64,
-                    //     },
-                    // )
-                    // .await;
+                    platform_client::sign_transactions(
+                        platform_client.clone(),
+                        platform_url.clone(),
+                        platform_token.clone(),
+                        SignTransactionInput {
+                            uuid: request_id.clone(),
+                            signed_extrinsic: encoded_tx.clone(),
+                            nonce: correct_nonce as i64,
+                            state: TransactionStateEnum::EXECUTED,
+                        },
+                    )
+                    .await;
                 }
                 Err(_) => {
                     tracing::error!(
@@ -466,19 +484,18 @@ impl TransactionProcessor {
                         trim_account(account.clone())
                     );
 
-                    // platform_client::sign_transactions(
-                    //     platform_client.clone(),
-                    //     platform_url.clone(),
-                    //     platform_token.clone(),
-                    //     platform_client::Transaction {
-                    //         id: request_id,
-                    //         state: "ABANDONED".to_string(),
-                    //         hash: None,
-                    //         signer: Some(account),
-                    //         signed_at: None,
-                    //     },
-                    // )
-                    // .await;
+                    platform_client::sign_transactions(
+                        platform_client.clone(),
+                        platform_url.clone(),
+                        platform_token.clone(),
+                        SignTransactionInput {
+                            uuid: request_id.clone(),
+                            signed_extrinsic: encoded_tx.clone(),
+                            nonce: correct_nonce as i64,
+                            state: TransactionStateEnum::ABANDONED,
+                        },
+                    )
+                    .await;
                 }
             }
         }
