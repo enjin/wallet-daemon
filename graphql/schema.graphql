@@ -13,18 +13,19 @@ enum Chain {
   RELAY
 }
 
-enum TransactionState {
+enum TransactionStateEnum {
   PENDING
   BROADCAST
   EXECUTED
-  ABANDONED
   FINALIZED
+  FAILED
+  ABANDONED
 }
 
 type Transaction {
   id: Int!
   transactionId: String
-  state: TransactionState!
+  state: TransactionStateEnum!
   transactionHash: String
   wallet: Wallet
   encodedData: String!
@@ -97,6 +98,7 @@ input SignTransactionInput {
     uuid: String!
     signedExtrinsic: String!
     nonce: Int!
+    state: TransactionStateEnum!
 }
 
 type Query {
@@ -114,7 +116,8 @@ type Mutation {
       wallets: [PopulateManagedWalletInput!]!
   ): Boolean!
 
-  UpdateUser(
-    account: String!
+  SetDaemonWalletAccount(
+      publicKey: String!
+      signedMessage: String!
   ): Boolean!
 }

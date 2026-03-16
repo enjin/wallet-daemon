@@ -30,8 +30,13 @@ async fn update_user(
     platform_url: String,
     platform_token: String,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let request_body =
-        graphql::UpdateUser::build_query(graphql::update_user::Variables { account });
+    let request_body = graphql::SetDaemonWalletAccount::build_query(
+        graphql::set_daemon_wallet_account::Variables {
+            public_key: account,
+            // TODO: this needs to be filled in
+            signed_message: Default::default(),
+        },
+    );
 
     let client = reqwest::Client::new();
     let res = client
@@ -41,16 +46,17 @@ async fn update_user(
         .send()
         .await?;
 
-    let result: Response<graphql::update_user::ResponseData> = res.json().await?;
+    let result: Response<graphql::set_daemon_wallet_account::ResponseData> = res.json().await?;
     let data = result.data.expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 
-    Ok(data.update_user)
+    Ok(data.result)
 }
 
 pub async fn set_multitenant(account: String, platform_url: String, platform_token: String) {
-    let is_tenant = get_packages(platform_url.clone())
-        .await
-        .expect("We could not connect to Enjin Platform, check your connection or the url");
+    // let is_tenant = get_packages(platform_url.clone())
+    //     .await
+    //     .expect("We could not connect to Enjin Platform, check your connection or the url");
+    let is_tenant = true;
 
     if is_tenant {
         let updated = update_user(account.clone(), platform_url.clone(), platform_token)

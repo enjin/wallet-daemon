@@ -39,7 +39,7 @@ pub async fn sign_transactions(
     //     "BROADCAST" => sign_transactions::TransactionState::BROADCAST,
     //     _ => sign_transactions::TransactionState::ABANDONED,
     // };
-    let uuid = transaction.uuid.clone();
+    // let (uuid, state) = (transaction.uuid.clone(), transaction.state.clone());
 
     let request_body = SignTransactions::build_query(sign_transactions::Variables {
         transactions: vec![transaction],
@@ -63,7 +63,11 @@ pub async fn sign_transactions(
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!("Signed transaction #{}", uuid,);
+                // tracing::info!(
+                //     "Updated transaction #{} with state: {:?}",
+                //     uuid,
+                //     state
+                // );
             }
             Err(e) => {
                 tracing::error!("Error decoding response of the platform: {:?}", e);

@@ -1,5 +1,6 @@
 use crate::graphql::get_pending_transactions::Chain;
 use crate::graphql::sign_transactions::SignTransactionInput;
+use crate::graphql::sign_transactions::TransactionStateEnum;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::{platform_client, SubscriptionParams};
@@ -293,6 +294,21 @@ impl TransactionProcessor {
                 }
                 TxStatus::Broadcasted => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
+
+                    let tx_hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
+
+                    platform_client::sign_transactions(
+                        platform_client.clone(),
+                        platform_url.clone(),
+                        platform_token.clone(),
+                        SignTransactionInput {
+                            uuid: request_id.clone(),
+                            signed_extrinsic: encoded_tx.clone(),
+                            nonce: correct_nonce as i64,
+                            state: TransactionStateEnum::BROADCAST,
+                        },
+                    )
+                    .await;
                 }
                 TxStatus::InBestBlock(block) => {
                     tracing::info!(
@@ -308,6 +324,7 @@ impl TransactionProcessor {
                             uuid: request_id.clone(),
                             signed_extrinsic: encoded_tx.clone(),
                             nonce: correct_nonce as i64,
+                            state: TransactionStateEnum::EXECUTED,
                         },
                     )
                     .await;

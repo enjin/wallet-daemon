@@ -19,10 +19,10 @@ pub struct SignTransactions;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/update_user.graphql",
-    response_derives = "Debug"
+    query_path = "graphql/set_daemon_wallet_account.graphql",
+    response_derives = "Debug,Copy,Clone"
 )]
-pub struct UpdateUser;
+pub struct SetDaemonWalletAccount;
 
 #[derive(GraphQLQuery)]
 #[graphql(
