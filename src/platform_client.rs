@@ -1,3 +1,4 @@
+use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{
     populate_managed_wallets, update_transaction, PopulateManagedWallets, UpdateTransaction,
 };
@@ -78,16 +79,19 @@ pub async fn update_transaction(
     }
 }
 
-pub async fn set_wallet_account(
+pub async fn populate_managed_wallets(
     client: Client,
     platform_url: String,
     platform_token: String,
-    external_id: String,
-    account: String,
+    wallets: Vec<PopulateManagedWalletInput>,
 ) {
-    let request_body = PopulateManagedWallets::build_query(populate_managed_wallets::Variables {
-        wallets: vec![], // TODO: populate this
-    });
+    let external_ids_and_accounts: Vec<(String, String)> = wallets
+        .iter()
+        .map(|x| (x.external_id.clone(), x.public_key.clone()))
+        .collect();
+
+    let request_body =
+        PopulateManagedWallets::build_query(populate_managed_wallets::Variables { wallets });
 
     let res = (|| async {
         client
@@ -102,12 +106,14 @@ pub async fn set_wallet_account(
 
     match res {
         Ok(res) => match res
-            .json::<graphql_client::Response<set_wallet_account::ResponseData>>()
+            .json::<graphql_client::Response<populate_managed_wallets::ResponseData>>()
             .await
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
+                for (external_id, account) in external_ids_and_accounts {
+                    tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
+                }
             }
             Err(e) => tracing::error!(
                 "Error decoding body {:?} of response to submitted account",

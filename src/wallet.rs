@@ -1,3 +1,4 @@
+use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{get_pending_managed_wallet_creations, GetPendingManagedWalletCreations};
 use crate::platform_client;
 use crate::wallet::get_pending_managed_wallet_creations::Chain;
@@ -186,42 +187,47 @@ impl DeriveWalletProcessor {
         }
     }
 
-    async fn derive_wallet(
+    async fn derive_wallets(
         client: Client,
         keypair: Keypair,
         platform_url: String,
         platform_token: String,
-        DeriveWalletRequest { external_id }: DeriveWalletRequest,
+        requests: Vec<DeriveWalletRequest>,
     ) {
-        let derive_junction = match external_id.parse::<i64>() {
-            Ok(_) => DeriveJunction::soft(external_id.parse::<i64>().unwrap()),
-            Err(_) => DeriveJunction::soft(external_id.clone()),
-        };
+        // DeriveWalletRequest { external_id }: DeriveWalletRequest,
 
-        let derived_pair = keypair.derive([derive_junction]);
-        let derived_key = hex::encode(derived_pair.public_key().0);
+        let wallets = requests
+            .into_iter()
+            .map(|request| {
+                let external_id = request.external_id;
+                let derive_junction = match external_id.parse::<i64>() {
+                    Ok(_) => DeriveJunction::soft(external_id.parse::<i64>().unwrap()),
+                    Err(_) => DeriveJunction::soft(external_id.clone()),
+                };
 
-        platform_client::set_wallet_account(
-            client,
-            platform_url,
-            platform_token,
-            external_id,
-            format!("0x{derived_key}"),
-        )
-        .await;
+                let derived_pair = keypair.derive([derive_junction]);
+                PopulateManagedWalletInput {
+                    external_id,
+                    public_key: hex::encode(derived_pair.public_key().0),
+                    // TODO: do this later
+                    signed_message: Default::default(),
+                }
+            })
+            .collect();
+
+        platform_client::populate_managed_wallets(client, platform_url, platform_token, wallets)
+            .await;
     }
 
     async fn launch_job_scheduler(mut self) {
         while let Some(requests) = self.receiver.recv().await {
-            for request in requests {
-                tokio::spawn(Self::derive_wallet(
-                    self.client.clone(),
-                    self.keypair.clone(),
-                    self.platform_url.clone(),
-                    self.platform_token.clone(),
-                    request,
-                ));
-            }
+            tokio::spawn(Self::derive_wallets(
+                self.client.clone(),
+                self.keypair.clone(),
+                self.platform_url.clone(),
+                self.platform_token.clone(),
+                requests,
+            ));
         }
     }
 
