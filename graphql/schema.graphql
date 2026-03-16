@@ -62,23 +62,28 @@ type TransactionConnection {
   totalCount: Int
 }
 
-type GetPendingTransaction {
-  wallet: WalletData
+type PendingTransaction {
   uuid: String!
   encodedData: String!
+  wallet: ManagedWallet!
 }
 
-type GetPendingTransactionsResult {
-  data: [GetPendingTransaction!]!
+type PendingTransactionCursorPagination {
+  data: [PendingTransaction!]!
+  perPage: Int!
+  previousCursor: String
   nextCursor: String
 }
 
-type WalletData {
+type ManagedWallet {
+  publicKey: String
   externalId: String
 }
 
-type GetPendingManagedWalletCreationsResult {
-  data: [WalletData!]!
+type ManagedWalletCursorPagination {
+  data: [ManagedWallet!]!
+  perPage: Int!
+  previousCursor: String
   nextCursor: String
 }
 
@@ -89,8 +94,8 @@ input PopulateManagedWalletInput {
 }
 
 type Query {
-  GetPendingTransactions(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): GetPendingTransactionsResult
-  GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): GetPendingManagedWalletCreationsResult
+  GetPendingTransactions(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): PendingTransactionCursorPagination
+  GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): ManagedWalletCursorPagination
 }
 
 type Mutation {
