@@ -116,7 +116,7 @@ impl DeriveWalletJob {
         let res = GetPendingManagedWalletCreations::build_query(
             get_pending_managed_wallet_creations::Variables {
                 // TODO: get these from the config
-                network: Network::CANARY,
+                network: Network::ENJIN,
                 chain: Chain::MATRIX,
                 limit: 0,
                 cursor: None,

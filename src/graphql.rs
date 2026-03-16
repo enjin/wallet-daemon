@@ -3,10 +3,10 @@ use graphql_client::GraphQLQuery;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/mark_and_list_pending_transactions.graphql",
+    query_path = "graphql/get_pending_transactions.graphql",
     response_derives = "Debug"
 )]
-pub struct MarkAndListPendingTransactions;
+pub struct GetPendingTransactions;
 
 #[derive(GraphQLQuery)]
 #[graphql(

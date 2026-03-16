@@ -1,4 +1,4 @@
-use crate::graphql::{mark_and_list_pending_transactions, MarkAndListPendingTransactions};
+use crate::graphql::{mark_and_list_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::{platform_client, SubscriptionParams};
 use backoff::exponential::ExponentialBackoff;
@@ -148,14 +148,13 @@ impl TransactionJob {
     async fn get_pending_transactions(
         &self,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res = MarkAndListPendingTransactions::build_query(
-            mark_and_list_pending_transactions::Variables {
+        let res =
+            GetPendingTransactions::build_query(mark_and_list_pending_transactions::Variables {
                 network: self.network.to_query_var(),
                 after: None,
                 first: Some(TRANSACTION_PAGE_SIZE),
                 mark_as_processing: Some(true),
-            },
-        );
+            });
 
         let res = self
             .client

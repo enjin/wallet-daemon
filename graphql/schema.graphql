@@ -62,6 +62,17 @@ type TransactionConnection {
   totalCount: Int
 }
 
+type GetPendingTransaction {
+  wallet: WalletData
+  uuid: String
+  encodedData: String
+}
+
+type GetPendingTransactionsResult {
+  data: [GetPendingTransaction!]!
+  nextCursor: String
+}
+
 type WalletData {
   externalId: String
 }
@@ -72,12 +83,11 @@ type GetPendingManagedWalletCreationsResult {
 }
 
 type Query {
+  GetPendingTransactions(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): GetPendingTransactionsResult
   GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): GetPendingManagedWalletCreationsResult
 }
 
 type Mutation {
-
-  MarkAndListPendingTransactions(network: String, after: String, first: Int, markAsProcessing: Boolean): TransactionConnection
 
   UpdateTransaction(
     id: Int!
