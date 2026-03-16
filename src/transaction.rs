@@ -1,4 +1,5 @@
-use crate::graphql::{mark_and_list_pending_transactions, GetPendingTransactions};
+use crate::graphql::get_pending_transactions::Chain;
+use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::{platform_client, SubscriptionParams};
 use backoff::exponential::ExponentialBackoff;
@@ -36,22 +37,24 @@ impl subxt::tx::Payload for Wrapper {
 
 #[derive(Clone)]
 pub struct TransactionRequest {
-    request_id: i64,
+    request_id: String,
     external_id: Option<String>,
     payload: Vec<u8>,
 }
 
-impl TryFrom<mark_and_list_pending_transactions::MarkAndListPendingTransactionsMarkAndListPendingTransactionsEdges> for TransactionRequest {
+impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for TransactionRequest {
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
-    fn try_from(edge: mark_and_list_pending_transactions::MarkAndListPendingTransactionsMarkAndListPendingTransactionsEdges) -> Result<Self, Self::Error> {
-        tracing::info!("{:?}", edge);
-        let external_id = edge.node.wallet.as_ref().and_then(|w| w.external_id.clone());
+    fn try_from(
+        data: get_pending_transactions::GetPendingTransactionsResultData,
+    ) -> Result<Self, Self::Error> {
+        tracing::info!("{:?}", data);
+        let external_id = data.wallet.as_ref().and_then(|w| w.external_id.clone());
 
         Ok(Self {
             external_id,
-            request_id: edge.node.id,
-            payload: hex::decode(edge.node.encoded_data.split('x').nth(1).unwrap())?,
+            request_id: data.uuid,
+            payload: hex::decode(data.encoded_data.split('x').nth(1).unwrap())?,
         })
     }
 }
@@ -148,13 +151,13 @@ impl TransactionJob {
     async fn get_pending_transactions(
         &self,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res =
-            GetPendingTransactions::build_query(mark_and_list_pending_transactions::Variables {
-                network: self.network.to_query_var(),
-                after: None,
-                first: Some(TRANSACTION_PAGE_SIZE),
-                mark_as_processing: Some(true),
-            });
+        let res = GetPendingTransactions::build_query(get_pending_transactions::Variables {
+            // TODO: get these from config
+            network: crate::graphql::get_pending_transactions::Network::ENJIN,
+            chain: Chain::MATRIX,
+            limit: 0,
+            cursor: None,
+        });
 
         let res = self
             .client
@@ -171,15 +174,11 @@ impl TransactionJob {
         &self,
         transactions_res: Response,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let response_body: graphql_client::Response<
-            mark_and_list_pending_transactions::ResponseData,
-        > = transactions_res.json().await?;
+        let response_body: graphql_client::Response<get_pending_transactions::ResponseData> =
+            transactions_res.json().await?;
 
         let response_data = response_body.data.ok_or(NO_TRANSACTIONS_MSG)?;
-        let transactions_req = response_data
-            .mark_and_list_pending_transactions
-            .ok_or(NO_TRANSACTIONS_MSG)?
-            .edges;
+        let transactions_req = response_data.result.ok_or(NO_TRANSACTIONS_MSG)?.data;
 
         if transactions_req.is_empty() {
             return Err(NO_TRANSACTIONS_MSG.into());
@@ -188,14 +187,12 @@ impl TransactionJob {
         Ok(transactions_req
             .into_iter()
             .filter_map(|p| {
-                p.and_then(|p| {
-                    TransactionRequest::try_from(p)
-                        .map_err(|e| {
-                            tracing::error!("Error creating TransactionRequest: {:?}", e);
-                            e
-                        })
-                        .ok()
-                })
+                TransactionRequest::try_from(p)
+                    .map_err(|e| {
+                        tracing::error!("Error creating TransactionRequest: {:?}", e);
+                        e
+                    })
+                    .ok()
             })
             .collect())
     }
@@ -236,7 +233,7 @@ impl TransactionProcessor {
         chain_client: Arc<OnlineClient<PolkadotConfig>>,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
-        request_id: i64,
+        request_id: String,
         payload: Vec<u8>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let public_key = hex::encode(keypair.public_key().0);
@@ -302,7 +299,7 @@ impl TransactionProcessor {
                         platform_url.clone(),
                         platform_token.clone(),
                         platform_client::Transaction {
-                            id: request_id,
+                            id: request_id.clone(),
                             state: "BROADCAST".to_string(),
                             hash: Some(tx_hash),
                             signer: None,
@@ -382,7 +379,7 @@ impl TransactionProcessor {
                 Arc::clone(&chain_client),
                 signer.clone(),
                 Arc::clone(&nonce_tracker),
-                request_id,
+                request_id.clone(),
                 payload.clone(),
             )
             .await

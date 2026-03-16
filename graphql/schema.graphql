@@ -64,8 +64,8 @@ type TransactionConnection {
 
 type GetPendingTransaction {
   wallet: WalletData
-  uuid: String
-  encodedData: String
+  uuid: String!
+  encodedData: String!
 }
 
 type GetPendingTransactionsResult {

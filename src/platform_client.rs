@@ -17,7 +17,7 @@ impl PlatformExponentialBuilder {
 }
 
 pub struct Transaction {
-    pub(crate) id: i64,
+    pub(crate) id: String,
     pub(crate) state: String,
     pub(crate) hash: Option<String>,
     pub(crate) signer: Option<String>,
@@ -37,7 +37,7 @@ pub async fn update_transaction(
     };
 
     let request_body = UpdateTransaction::build_query(update_transaction::Variables {
-        id: transaction.id,
+        id: 0, // TODO: update this
         state: Some(transaction_state),
         transaction_hash: transaction.hash,
         signing_account: transaction.signer,
