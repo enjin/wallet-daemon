@@ -82,6 +82,12 @@ type GetPendingManagedWalletCreationsResult {
   nextCursor: String
 }
 
+input PopulateManagedWalletInput {
+    externalId: String!
+    publicKey: String!
+    signedMessage: String!
+}
+
 type Query {
   GetPendingTransactions(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): GetPendingTransactionsResult
   GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): GetPendingManagedWalletCreationsResult
@@ -97,9 +103,8 @@ type Mutation {
     signedAtBlock: Int
   ): Boolean!
 
-  SetWalletAccount(
-    id: Int!
-    account: String!
+  PopulateManagedWallets(
+      wallets: [PopulateManagedWalletInput!]!
   ): Boolean!
 
   UpdateUser(

@@ -35,7 +35,7 @@ pub struct GetPendingManagedWalletCreations;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/set_wallet_account.graphql",
+    query_path = "graphql/populate_managed_wallets.graphql",
     response_derives = "Debug"
 )]
-pub struct SetWalletAccount;
+pub struct PopulateManagedWallets;

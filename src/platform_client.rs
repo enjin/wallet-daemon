@@ -1,4 +1,6 @@
-use crate::graphql::{set_wallet_account, update_transaction, SetWalletAccount, UpdateTransaction};
+use crate::graphql::{
+    populate_managed_wallets, update_transaction, PopulateManagedWallets, UpdateTransaction,
+};
 use backon::{ExponentialBuilder, Retryable};
 use graphql_client::GraphQLQuery;
 use reqwest::Client;
@@ -83,9 +85,8 @@ pub async fn set_wallet_account(
     external_id: String,
     account: String,
 ) {
-    let request_body = SetWalletAccount::build_query(set_wallet_account::Variables {
-        id: 0, // TODO: remove
-        account: account.clone(),
+    let request_body = PopulateManagedWallets::build_query(populate_managed_wallets::Variables {
+        wallets: vec![], // TODO: populate this
     });
 
     let res = (|| async {

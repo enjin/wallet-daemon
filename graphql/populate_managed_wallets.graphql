@@ -1,0 +1,3 @@
+mutation PopulateManagedWallets($wallets: [PopulateManagedWalletInput!]!) {
+  result: PopulateManagedWallets(wallets: $wallets)
+}
