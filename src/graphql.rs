@@ -11,10 +11,10 @@ pub struct GetPendingTransactions;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/update_transaction.graphql",
+    query_path = "graphql/sign_transactions.graphql",
     response_derives = "Debug"
 )]
-pub struct UpdateTransaction;
+pub struct SignTransactions;
 
 #[derive(GraphQLQuery)]
 #[graphql(

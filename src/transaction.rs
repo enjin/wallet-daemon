@@ -1,4 +1,5 @@
 use crate::graphql::get_pending_transactions::Chain;
+use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::{platform_client, SubscriptionParams};
@@ -49,7 +50,7 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
         data: get_pending_transactions::GetPendingTransactionsResultData,
     ) -> Result<Self, Self::Error> {
         tracing::info!("{:?}", data);
-        let external_id = data.wallet.as_ref().and_then(|w| w.external_id.clone());
+        let external_id = data.wallet.external_id.clone();
 
         Ok(Self {
             external_id,
@@ -292,21 +293,6 @@ impl TransactionProcessor {
                 }
                 TxStatus::Broadcasted => {
                     tracing::info!("Transaction #{} has been BROADCASTED", request_id);
-                    let tx_hash = format!("0x{}", hex::encode(transaction.extrinsic_hash().0));
-
-                    platform_client::update_transaction(
-                        platform_client.clone(),
-                        platform_url.clone(),
-                        platform_token.clone(),
-                        platform_client::Transaction {
-                            id: request_id.clone(),
-                            state: "BROADCAST".to_string(),
-                            hash: Some(tx_hash),
-                            signer: None,
-                            signed_at: Some(latest_block.number() as i64),
-                        },
-                    )
-                    .await;
                 }
                 TxStatus::InBestBlock(block) => {
                     tracing::info!(
@@ -314,6 +300,17 @@ impl TransactionProcessor {
                         request_id,
                         block.block_hash()
                     );
+                    platform_client::sign_transactions(
+                        platform_client.clone(),
+                        platform_url.clone(),
+                        platform_token.clone(),
+                        SignTransactionInput {
+                            uuid: request_id.clone(),
+                            signed_extrinsic: encoded_tx.clone(),
+                            nonce: correct_nonce as i64,
+                        },
+                    )
+                    .await;
                     return Ok(hex::encode(block.extrinsic_hash().0));
                 }
                 TxStatus::NoLongerInBestBlock => {
@@ -348,121 +345,124 @@ impl TransactionProcessor {
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         platform_url: String,
         platform_token: String,
-        TransactionRequest {
-            request_id,
-            external_id,
-            payload,
-        }: TransactionRequest,
+        requests: Vec<TransactionRequest>,
     ) {
-        let signer = if let Some(external_id) = external_id {
-            let derive_junction = match external_id.parse::<i64>() {
-                Ok(id) => DeriveJunction::soft(id),
-                Err(_) => DeriveJunction::soft(external_id),
+        for request in requests {
+            let TransactionRequest {
+                request_id,
+                external_id,
+                payload,
+            } = request;
+            tracing::info!("Received transaction request: #{request_id}");
+
+            let signer = if let Some(external_id) = external_id {
+                let derive_junction = match external_id.parse::<i64>() {
+                    Ok(id) => DeriveJunction::soft(id),
+                    Err(_) => DeriveJunction::soft(external_id),
+                };
+
+                keypair.derive([derive_junction])
+            } else {
+                keypair.clone()
             };
 
-            keypair.derive([derive_junction])
-        } else {
-            keypair
-        };
+            tracing::info!(
+                "Signing transaction #{} with account {}",
+                request_id,
+                hex::encode(signer.public_key().0)
+            );
 
-        tracing::info!(
-            "Signing transaction #{} with account {}",
-            request_id,
-            hex::encode(signer.public_key().0)
-        );
+            let res = backoff::future::retry(Self::default_backoff(), || async {
+                match Self::submit_and_watch(
+                    platform_client.clone(),
+                    platform_url.clone(),
+                    platform_token.clone(),
+                    Arc::clone(&chain_client),
+                    signer.clone(),
+                    Arc::clone(&nonce_tracker),
+                    request_id.clone(),
+                    payload.clone(),
+                )
+                .await
+                {
+                    Ok(hash) => Ok(hash),
+                    Err(e) => {
+                        // ServerError(1010) - Invalid Transaction - Transaction is outdated
+                        // ServerError(1012) - Transaction is temporally banned
+                        // ServerError(1013) - Transaction already imported
+                        // ServerError(1014) - Priority is too low
+                        // We will reset the nonce if any error occurs
+                        nonce_tracker
+                            .lock()
+                            .unwrap()
+                            .put(hex::encode(signer.public_key().0), 0);
 
-        let res = backoff::future::retry(Self::default_backoff(), || async {
-            match Self::submit_and_watch(
-                platform_client.clone(),
-                platform_url.clone(),
-                platform_token.clone(),
-                Arc::clone(&chain_client),
-                signer.clone(),
-                Arc::clone(&nonce_tracker),
-                request_id.clone(),
-                payload.clone(),
-            )
-            .await
-            {
-                Ok(hash) => Ok(hash),
-                Err(e) => {
-                    // ServerError(1010) - Invalid Transaction - Transaction is outdated
-                    // ServerError(1012) - Transaction is temporally banned
-                    // ServerError(1013) - Transaction already imported
-                    // ServerError(1014) - Priority is too low
-                    // We will reset the nonce if any error occurs
-                    nonce_tracker
-                        .lock()
-                        .unwrap()
-                        .put(hex::encode(signer.public_key().0), 0);
-
-                    tracing::info!(
-                        "Resetting cached nonce from {} to 0",
-                        hex::encode(signer.public_key().0)
-                    );
-                    tracing::error!(
-                        "Error submitting transaction #{} from account {} payload: 0x{}",
-                        request_id,
-                        trim_account(hex::encode(signer.public_key().0)),
-                        hex::encode(payload.clone())
-                    );
-                    tracing::error!("{:?}", e);
-                    Err(backoff::Error::transient(e))
+                        tracing::info!(
+                            "Resetting cached nonce from {} to 0",
+                            hex::encode(signer.public_key().0)
+                        );
+                        tracing::error!(
+                            "Error submitting transaction #{} from account {} payload: 0x{}",
+                            request_id,
+                            trim_account(hex::encode(signer.public_key().0)),
+                            hex::encode(payload.clone())
+                        );
+                        tracing::error!("{:?}", e);
+                        Err(backoff::Error::transient(e))
+                    }
                 }
-            }
-        })
-        .await;
+            })
+            .await;
 
-        let signing_account = hex::encode(signer.public_key().0);
-        let account = format!("0x{signing_account}");
-        let latest_block = chain_client.blocks().at_latest().await.unwrap();
+            let signing_account = hex::encode(signer.public_key().0);
+            let account = format!("0x{signing_account}");
+            let latest_block = chain_client.blocks().at_latest().await.unwrap();
 
-        match res {
-            Ok(hash) => {
-                let trimmed_hash = trim_account(hash.clone());
-                let trimmed_account = trim_account(account.clone());
+            match res {
+                Ok(hash) => {
+                    // let trimmed_hash = trim_account(hash.clone());
+                    // let trimmed_account = trim_account(account.clone());
 
-                tracing::info!(
-                    "Transaction #{} hash {} signed with account {} setting it to EXECUTED",
-                    request_id,
-                    trimmed_hash,
-                    trimmed_account
-                );
+                    // tracing::info!(
+                    //     "Transaction #{} hash {} signed with account {} setting it to EXECUTED",
+                    //     request_id,
+                    //     trimmed_hash,
+                    //     trimmed_account
+                    // );
 
-                platform_client::update_transaction(
-                    platform_client.clone(),
-                    platform_url.clone(),
-                    platform_token.clone(),
-                    platform_client::Transaction {
-                        id: request_id,
-                        state: "EXECUTED".to_string(),
-                        hash: Some(format!("0x{}", hash)),
-                        signer: Some(account),
-                        signed_at: Some(latest_block.number() as i64),
-                    },
-                )
-                .await;
-            }
-            Err(_) => {
-                tracing::error!(
-                    "Transaction #{} failed to sign with account {} setting it to ABANDONED",
-                    request_id,
-                    trim_account(account.clone())
-                );
+                    // platform_client::sign_transactions(
+                    //     platform_client.clone(),
+                    //     platform_url.clone(),
+                    //     platform_token.clone(),
+                    //     SignTransactionInput {
+                    //         uuid: request_id.clone(),
+                    //         signed_extrinsic: encoded_tx.clone(),
+                    //         nonce: correct_nonce as i64,
+                    //     },
+                    // )
+                    // .await;
+                }
+                Err(_) => {
+                    tracing::error!(
+                        "Transaction #{} failed to sign with account {} setting it to ABANDONED",
+                        request_id,
+                        trim_account(account.clone())
+                    );
 
-                platform_client::update_transaction(
-                    platform_client.clone(),
-                    platform_url.clone(),
-                    platform_token.clone(),
-                    platform_client::Transaction {
-                        id: request_id,
-                        state: "ABANDONED".to_string(),
-                        hash: None,
-                        signer: Some(account),
-                        signed_at: None,
-                    },
-                )
-                .await;
+                    // platform_client::sign_transactions(
+                    //     platform_client.clone(),
+                    //     platform_url.clone(),
+                    //     platform_token.clone(),
+                    //     platform_client::Transaction {
+                    //         id: request_id,
+                    //         state: "ABANDONED".to_string(),
+                    //         hash: None,
+                    //         signer: Some(account),
+                    //         signed_at: None,
+                    //     },
+                    // )
+                    // .await;
+                }
             }
         }
     }
@@ -485,18 +485,15 @@ impl TransactionProcessor {
         sleep(Duration::from_millis(BLOCK_TIME_MS * 2)).await;
 
         while let Some(requests) = self.receiver.recv().await {
-            for request in requests {
-                tracing::info!("Received transaction request: #{}", request.request_id);
-                tokio::spawn(Self::transaction_handler(
-                    Arc::clone(&self.chain_client),
-                    self.platform_client.clone(),
-                    self.keypair.clone(),
-                    Arc::clone(&nonce_tracker),
-                    self.platform_url.clone(),
-                    self.platform_token.clone(),
-                    request,
-                ));
-            }
+            tokio::spawn(Self::transaction_handler(
+                Arc::clone(&self.chain_client),
+                self.platform_client.clone(),
+                self.keypair.clone(),
+                Arc::clone(&nonce_tracker),
+                self.platform_url.clone(),
+                self.platform_token.clone(),
+                requests,
+            ));
         }
     }
 

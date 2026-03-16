@@ -93,6 +93,12 @@ input PopulateManagedWalletInput {
     signedMessage: String!
 }
 
+input SignTransactionInput {
+    uuid: String!
+    signedExtrinsic: String!
+    nonce: Int!
+}
+
 type Query {
   GetPendingTransactions(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): PendingTransactionCursorPagination
   GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): ManagedWalletCursorPagination
@@ -100,12 +106,8 @@ type Query {
 
 type Mutation {
 
-  UpdateTransaction(
-    id: Int!
-    signingAccount: String
-    state: TransactionState
-    transactionHash: String
-    signedAtBlock: Int
+  SignTransactions(
+      transactions: [SignTransactionInput!]!
   ): Boolean!
 
   PopulateManagedWallets(

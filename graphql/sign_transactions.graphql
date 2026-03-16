@@ -1,0 +1,3 @@
+mutation SignTransactions($transactions: [SignTransactionInput!]!) {
+  result: SignTransactions(transactions: $transactions)
+}

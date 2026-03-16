@@ -1,6 +1,7 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
+use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{
-    populate_managed_wallets, update_transaction, PopulateManagedWallets, UpdateTransaction,
+    populate_managed_wallets, sign_transactions, PopulateManagedWallets, SignTransactions,
 };
 use backon::{ExponentialBuilder, Retryable};
 use graphql_client::GraphQLQuery;
@@ -27,24 +28,21 @@ pub struct Transaction {
     pub(crate) signed_at: Option<i64>,
 }
 
-pub async fn update_transaction(
+pub async fn sign_transactions(
     client: Client,
     platform_url: String,
     platform_token: String,
-    transaction: Transaction,
+    transaction: SignTransactionInput,
 ) {
-    let transaction_state = match transaction.state.as_str() {
-        "EXECUTED" => update_transaction::TransactionState::EXECUTED,
-        "BROADCAST" => update_transaction::TransactionState::BROADCAST,
-        _ => update_transaction::TransactionState::ABANDONED,
-    };
+    // let transaction_state = match transaction.state.as_str() {
+    //     "EXECUTED" => sign_transactions::TransactionState::EXECUTED,
+    //     "BROADCAST" => sign_transactions::TransactionState::BROADCAST,
+    //     _ => sign_transactions::TransactionState::ABANDONED,
+    // };
+    let uuid = transaction.uuid.clone();
 
-    let request_body = UpdateTransaction::build_query(update_transaction::Variables {
-        id: 0, // TODO: update this
-        state: Some(transaction_state),
-        transaction_hash: transaction.hash,
-        signing_account: transaction.signer,
-        signed_at_block: transaction.signed_at,
+    let request_body = SignTransactions::build_query(sign_transactions::Variables {
+        transactions: vec![transaction],
     });
 
     let res = (|| async {
@@ -60,16 +58,12 @@ pub async fn update_transaction(
 
     match res {
         Ok(res) => match res
-            .json::<graphql_client::Response<update_transaction::ResponseData>>()
+            .json::<graphql_client::Response<sign_transactions::ResponseData>>()
             .await
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!(
-                    "Updated transaction #{} with state: {}",
-                    transaction.id,
-                    transaction.state,
-                );
+                tracing::info!("Signed transaction #{}", uuid,);
             }
             Err(e) => {
                 tracing::error!("Error decoding response of the platform: {:?}", e);
