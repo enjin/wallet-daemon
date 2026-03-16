@@ -1,4 +1,4 @@
-use crate::graphql::{get_pending_wallets, GetPendingWallets};
+use crate::graphql::{get_pending_managed_wallet_creations, GetPendingManagedWalletCreations};
 use crate::platform_client;
 use graphql_client::GraphQLQuery;
 use reqwest::{Client, Response};
@@ -111,7 +111,7 @@ impl DeriveWalletJob {
     async fn get_pending_wallets(
         &self,
     ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res = GetPendingWallets::build_query(get_pending_wallets::Variables {
+        let res = GetPendingManagedWalletCreations::build_query(get_pending_wallets::Variables {
             after: None,
             first: Some(ACCOUNT_PAGE_SIZE),
         });

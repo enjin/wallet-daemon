@@ -27,10 +27,10 @@ pub struct UpdateUser;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/get_pending_wallets.graphql",
+    query_path = "graphql/get_pending_managed_wallet_creations.graphql",
     response_derives = "Debug"
 )]
-pub struct GetPendingWallets;
+pub struct GetPendingManagedWalletCreations;
 
 #[derive(GraphQLQuery)]
 #[graphql(

@@ -3,6 +3,16 @@ schema {
   query: Query
 }
 
+enum Network {
+  CANARY
+  ENJIN
+}
+
+enum Chain {
+  MATRIX
+  RELAY
+}
+
 enum TransactionState {
   PENDING
   BROADCAST
@@ -41,17 +51,6 @@ type PageInfo {
   endCursor: String!
 }
 
-type WalletEdge {
-  node: Wallet!
-  cursor: String!
-}
-
-type WalletConnection {
-  edges: [WalletEdge]!
-  pageInfo: PageInfo!
-  totalCount: Int
-}
-
 type TransactionEdge {
   node: Transaction!
   cursor: String!
@@ -63,8 +62,17 @@ type TransactionConnection {
   totalCount: Int
 }
 
+type WalletData {
+  externalId: String
+}
+
+type GetPendingManagedWalletCreationsResult {
+  data: [WalletData!]!
+  nextCursor: String
+}
+
 type Query {
-  GetPendingWallets(after: String, first: Int): WalletConnection
+  GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): GetPendingManagedWalletCreationsResult
 }
 
 type Mutation {
