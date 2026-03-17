@@ -1,4 +1,3 @@
-use crate::graphql::get_pending_transactions::Chain;
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::sign_transactions::TransactionStateEnum;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
@@ -162,7 +161,7 @@ impl TransactionJob {
         let res = GetPendingTransactions::build_query(get_pending_transactions::Variables {
             // TODO: get these from config
             network: crate::graphql::get_pending_transactions::Network::ENJIN,
-            chain: Chain::MATRIX,
+            chain: crate::CHAIN.into(),
             limit: 0,
             cursor: None,
         });

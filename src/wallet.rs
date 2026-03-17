@@ -1,8 +1,6 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{get_pending_managed_wallet_creations, GetPendingManagedWalletCreations};
 use crate::platform_client;
-use crate::wallet::get_pending_managed_wallet_creations::Chain;
-use crate::wallet::get_pending_managed_wallet_creations::Network;
 use graphql_client::GraphQLQuery;
 use reqwest::{Client, Response};
 use std::time::Duration;
@@ -116,8 +114,8 @@ impl DeriveWalletJob {
         let res = GetPendingManagedWalletCreations::build_query(
             get_pending_managed_wallet_creations::Variables {
                 // TODO: get these from the config
-                network: Network::ENJIN,
-                chain: Chain::MATRIX,
+                network: crate::NETWORK.into(),
+                chain: crate::CHAIN.into(),
                 limit: 0,
                 cursor: None,
             },
