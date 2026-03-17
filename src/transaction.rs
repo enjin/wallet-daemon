@@ -22,6 +22,7 @@ use tokio::time::{interval, sleep};
 const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const BLOCK_TIME_MS: u64 = 12000;
 const TRANSACTION_POLLER_MS: u64 = 6000;
+const TRANSACTION_PAGE_SIZE: i64 = 25;
 
 struct Wrapper(Vec<u8>);
 
@@ -160,9 +161,9 @@ impl TransactionJob {
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
         let res = GetPendingTransactions::build_query(get_pending_transactions::Variables {
             // TODO: get these from config
-            network: crate::graphql::get_pending_transactions::Network::ENJIN,
+            network: crate::NETWORK.into(),
             chain: crate::CHAIN.into(),
-            limit: 0,
+            limit: TRANSACTION_PAGE_SIZE,
             cursor: None,
         });
 
