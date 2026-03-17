@@ -285,7 +285,7 @@ impl TransactionProcessor {
                         platform_token.clone(),
                         SignTransactionInput {
                             uuid: request_id.clone(),
-                            signed_extrinsic: encoded_tx.clone(),
+                            signed_extrinsic: format!("0x{encoded_tx}"),
                             nonce: correct_nonce as i64,
                             state: TransactionStateEnum::BROADCAST,
                         },
@@ -464,7 +464,7 @@ impl TransactionProcessor {
                         platform_token.clone(),
                         SignTransactionInput {
                             uuid: request_id.clone(),
-                            signed_extrinsic: encoded_tx.clone(),
+                            signed_extrinsic: format!("0x{encoded_tx}"),
                             nonce: correct_nonce as i64,
                             state: TransactionStateEnum::EXECUTED,
                         },
@@ -484,7 +484,7 @@ impl TransactionProcessor {
                         platform_token.clone(),
                         SignTransactionInput {
                             uuid: request_id.clone(),
-                            signed_extrinsic: encoded_tx.clone(),
+                            signed_extrinsic: format!("0x{encoded_tx}"),
                             nonce: correct_nonce as i64,
                             state: TransactionStateEnum::ABANDONED,
                         },

@@ -34,15 +34,15 @@ async fn update_user(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let request_body = graphql::SetDaemonWalletAccount::build_query(
         graphql::set_daemon_wallet_account::Variables {
-            public_key: account,
+            public_key: format!("0x{account}"),
             // TODO: this needs to be filled in
-            signed_message: Default::default(),
+            signed_message: "1".to_string(),
         },
     );
 
     let client = reqwest::Client::new();
     let res = client
-        .post(format!("{platform_url}"))
+        .post(platform_url)
         .header("Authorization", platform_token)
         .json(&request_body)
         .send()
