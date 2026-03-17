@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 const ACCOUNT_POLLER_MS: u64 = 6000;
+const ACCOUNT_PAGE_SIZE: i64 = 200;
 
 #[derive(Clone)]
 pub struct DeriveWalletRequest {
@@ -116,7 +117,7 @@ impl DeriveWalletJob {
                 // TODO: get these from the config
                 network: crate::NETWORK.into(),
                 chain: crate::CHAIN.into(),
-                limit: 0,
+                limit: ACCOUNT_PAGE_SIZE,
                 cursor: None,
             },
         );
