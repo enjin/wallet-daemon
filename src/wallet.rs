@@ -206,9 +206,9 @@ impl DeriveWalletProcessor {
                 let derived_pair = keypair.derive([derive_junction]);
                 PopulateManagedWalletInput {
                     external_id,
-                    public_key: hex::encode(derived_pair.public_key().0),
+                    public_key: format!("0x{}", hex::encode(derived_pair.public_key().0)),
                     // TODO: do this later
-                    signed_message: Default::default(),
+                    signed_message: "1".to_string(),
                 }
             })
             .collect();
