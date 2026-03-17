@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use tokio::time::interval;
 
 const ACCOUNT_POLLER_MS: u64 = 6000;
-const ACCOUNT_PAGE_SIZE: i64 = 200;
+const ACCOUNT_PAGE_SIZE: i64 = 100;
 
 #[derive(Clone)]
 pub struct DeriveWalletRequest {
@@ -194,7 +194,7 @@ impl DeriveWalletProcessor {
     ) {
         // DeriveWalletRequest { external_id }: DeriveWalletRequest,
 
-        let wallets = requests
+        let wallets: Vec<_> = requests
             .into_iter()
             .map(|request| {
                 let external_id = request.external_id;
@@ -213,8 +213,15 @@ impl DeriveWalletProcessor {
             })
             .collect();
 
-        platform_client::populate_managed_wallets(client, platform_url, platform_token, wallets)
+        if !wallets.is_empty() {
+            platform_client::populate_managed_wallets(
+                client,
+                platform_url,
+                platform_token,
+                wallets,
+            )
             .await;
+        }
     }
 
     async fn launch_job_scheduler(mut self) {
