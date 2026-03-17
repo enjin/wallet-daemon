@@ -42,7 +42,7 @@ async fn update_user(
 
     let client = reqwest::Client::new();
     let res = client
-        .post(format!("{platform_url}/multi-tenant"))
+        .post(format!("{platform_url}"))
         .header("Authorization", platform_token)
         .json(&request_body)
         .send()
@@ -55,24 +55,17 @@ async fn update_user(
 }
 
 pub async fn set_multitenant(account: String, platform_url: String, platform_token: String) {
-    // let is_tenant = get_packages(platform_url.clone())
-    //     .await
-    //     .expect("We could not connect to Enjin Platform, check your connection or the url");
-    let is_tenant = false;
+    let updated = update_user(account.clone(), platform_url.clone(), platform_token)
+        .await
+        .expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 
-    if is_tenant {
-        let updated = update_user(account.clone(), platform_url.clone(), platform_token)
-            .await
-            .expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
+    let trimmed_url = platform_url
+        .trim_end_matches("/graphql")
+        .replace("https://", "");
+    let trimmed_account = format!("0x{}...{}", &account[..4], &account[60..]);
+    println!("** (MultiTenant) Wallet at {trimmed_url} set to: {trimmed_account}");
 
-        let trimmed_url = platform_url
-            .trim_end_matches("/graphql")
-            .replace("https://", "");
-        let trimmed_account = format!("0x{}...{}", &account[..4], &account[60..]);
-        println!("** (MultiTenant) Wallet at {trimmed_url} set to: {trimmed_account}");
-
-        if !updated {
-            panic!("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.")
-        }
+    if !updated {
+        panic!("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.")
     }
 }
