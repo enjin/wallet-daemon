@@ -67,6 +67,8 @@ type PendingTransaction {
   uuid: String!
   encodedData: String!
   wallet: ManagedWallet!
+  shouldSignFuelTank: Boolean!
+  fuelTankOwnerExternalId: String
 }
 
 type PendingTransactionCursorPagination {

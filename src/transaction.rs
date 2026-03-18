@@ -48,6 +48,8 @@ pub struct TransactionRequest {
     request_id: String,
     external_id: Option<String>,
     payload: Vec<u8>,
+    /// If this is Some, the extrinsic is a dispatch from fuel tanks and needs the signature added
+    pub fuel_tank_owner_external_id: Option<String>,
 }
 
 impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for TransactionRequest {
@@ -63,6 +65,10 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
             external_id,
             request_id: data.uuid,
             payload: hex::decode(data.encoded_data.split('x').nth(1).unwrap())?,
+            fuel_tank_owner_external_id: data
+                .should_sign_fuel_tank
+                .then_some(data.fuel_tank_owner_external_id)
+                .flatten(),
         })
     }
 }
@@ -345,6 +351,7 @@ impl TransactionProcessor {
                 request_id,
                 external_id,
                 payload,
+                fuel_tank_owner_external_id: _,
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
 
