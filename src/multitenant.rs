@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use subxt_signer::sr25519::Keypair;
 
 #[allow(dead_code)]
 #[derive(Deserialize)]
@@ -27,16 +28,17 @@ async fn get_packages(platform_url: String) -> Result<bool, Box<dyn std::error::
         .contains_key("enjin/platform-multi-tenant"))
 }
 
-async fn update_user(
-    account: String,
+async fn set_daemon_wallet_account(
+    keypair: Keypair,
     platform_url: String,
     platform_token: String,
 ) -> Result<bool, Box<dyn std::error::Error>> {
+    let message = b"EnjinPlatform.VerifyDaemonWallet";
+    let signature = keypair.sign(message);
     let request_body = graphql::SetDaemonWalletAccount::build_query(
         graphql::set_daemon_wallet_account::Variables {
-            public_key: format!("0x{account}"),
-            // TODO: this needs to be filled in
-            signed_message: "1".to_string(),
+            public_key: format!("0x{}", hex::encode(keypair.public_key().0)),
+            signed_message: format!("0x{}", hex::encode(signature.0)),
         },
     );
 
@@ -54,8 +56,9 @@ async fn update_user(
     Ok(data.result)
 }
 
-pub async fn set_multitenant(account: String, platform_url: String, platform_token: String) {
-    let updated = update_user(account.clone(), platform_url.clone(), platform_token)
+pub async fn set_multitenant(keypair: Keypair, platform_url: String, platform_token: String) {
+    let account = hex::encode(keypair.public_key().0);
+    let updated = set_daemon_wallet_account(keypair, platform_url.clone(), platform_token)
         .await
         .expect("You are connected to a multi-tenant platform but the daemon has failed to update your account. Check your access token or if you are connected to the correct platform.");
 

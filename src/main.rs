@@ -59,11 +59,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (keypair, matrix_url, relay_url, platform_url, platform_token) =
         load_wallet(load_config()).await;
-    let signing = hex::encode(keypair.public_key().0);
 
     tracing_subscriber::fmt::init();
     // Check if we are connecting to a multitenant platform
-    set_multitenant(signing, platform_url.clone(), platform_token.clone()).await;
+    set_multitenant(
+        keypair.clone(),
+        platform_url.clone(),
+        platform_token.clone(),
+    )
+    .await;
     // Setup matrix client and parameters
     let (matrix_client, matrix_subscription, matrix_sub_params) = setup_client(&matrix_url).await;
     // Setup relay client and parameters
