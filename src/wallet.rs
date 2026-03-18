@@ -204,11 +204,16 @@ impl DeriveWalletProcessor {
                 };
 
                 let derived_pair = keypair.derive([derive_junction]);
+                let signature = {
+                    let daemon_public_key = hex::encode(keypair.public_key().0);
+                    let message =
+                        format!("EnjinPlatform.VerifyManagedWallet(0x{daemon_public_key})");
+                    derived_pair.sign(message.as_bytes())
+                };
                 PopulateManagedWalletInput {
                     external_id,
                     public_key: format!("0x{}", hex::encode(derived_pair.public_key().0)),
-                    // TODO: do this later
-                    signed_message: "1".to_string(),
+                    signed_message: format!("0x{}", hex::encode(signature.0)),
                 }
             })
             .collect();
