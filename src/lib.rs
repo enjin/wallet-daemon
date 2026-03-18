@@ -9,6 +9,10 @@ pub use wallet::DeriveWalletJob;
 
 pub const CHAIN: Chain = Chain::Matrix; // Matrix or Relay
 pub const NETWORK: ConfigNetwork = ConfigNetwork::Enjin; // Canary or Enjin
+/// The number of blocks that the signed tx is mortal for
+pub const TX_MORTALITY: u64 = 64;
+/// The number blocks that the dummy signed tx is mortal for
+pub const DUMMY_TX_MORTALITY: u64 = 14_400;
 
 pub mod config_loader;
 mod graphql;

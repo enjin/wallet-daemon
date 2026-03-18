@@ -99,6 +99,7 @@ input SignTransactionInput {
     signedExtrinsic: String!
     nonce: Int!
     state: TransactionStateEnum!
+    signedAbandonExtrinsic: String!
 }
 
 type Query {

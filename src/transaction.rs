@@ -2,7 +2,7 @@ use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::sign_transactions::TransactionStateEnum;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
-use crate::{platform_client, SubscriptionParams};
+use crate::{platform_client, SubscriptionParams, DUMMY_TX_MORTALITY, TX_MORTALITY};
 use backoff::exponential::ExponentialBackoff;
 use backoff::SystemClock;
 use graphql_client::GraphQLQuery;
@@ -244,6 +244,7 @@ impl TransactionProcessor {
         payload: Vec<u8>,
         correct_nonce: u64,
         encoded_tx: String,
+        dummy_tx: String,
     ) -> Result<SubmitResult, Box<dyn std::error::Error + Send + Sync>> {
         let params = DefaultExtrinsicParamsBuilder::new()
             .nonce(correct_nonce)
@@ -288,6 +289,7 @@ impl TransactionProcessor {
                             signed_extrinsic: format!("0x{encoded_tx}"),
                             nonce: correct_nonce as i64,
                             state: TransactionStateEnum::BROADCAST,
+                            signed_abandon_extrinsic: dummy_tx.clone(),
                         },
                     )
                     .await;
@@ -381,8 +383,9 @@ impl TransactionProcessor {
 
             let params = DefaultExtrinsicParamsBuilder::new()
                 .nonce(correct_nonce)
-                .mortal(64)
+                .mortal(TX_MORTALITY)
                 .build();
+
             let signed_tx = match chain_client
                 .tx()
                 .create_signed(&Wrapper(payload.clone()), &signer, params)
@@ -393,6 +396,26 @@ impl TransactionProcessor {
                     tracing::error!("Failed to create signed transaction: {:?}", e);
                     continue;
                 }
+            };
+            let dummy_tx = {
+                // this is system.remark with empty value: 0x000000
+                let payload = vec![0, 0, 0];
+                let params = DefaultExtrinsicParamsBuilder::new()
+                    .nonce(correct_nonce)
+                    .mortal(DUMMY_TX_MORTALITY)
+                    .build();
+                let signed_dummy_tx = match chain_client
+                    .tx()
+                    .create_signed(&Wrapper(payload), &signer, params)
+                    .await
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        tracing::error!("Failed to create signed dummy transaction: {:?}", e);
+                        continue;
+                    }
+                };
+                format!("0x{}", hex::encode(signed_dummy_tx.encoded()))
             };
             let encoded_tx = hex::encode(signed_tx.encoded());
             tracing::info!(
@@ -413,6 +436,7 @@ impl TransactionProcessor {
                     payload.clone(),
                     correct_nonce,
                     encoded_tx.clone(),
+                    dummy_tx.clone(),
                 )
                 .await
                 {
@@ -467,6 +491,7 @@ impl TransactionProcessor {
                             signed_extrinsic: format!("0x{encoded_tx}"),
                             nonce: correct_nonce as i64,
                             state: TransactionStateEnum::EXECUTED,
+                            signed_abandon_extrinsic: dummy_tx.clone(),
                         },
                     )
                     .await;
@@ -487,6 +512,7 @@ impl TransactionProcessor {
                             signed_extrinsic: format!("0x{encoded_tx}"),
                             nonce: correct_nonce as i64,
                             state: TransactionStateEnum::ABANDONED,
+                            signed_abandon_extrinsic: dummy_tx.clone(),
                         },
                     )
                     .await;
