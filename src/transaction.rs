@@ -425,8 +425,13 @@ impl TransactionProcessor {
                     ..Default::default()
                 };
 
-                // append to the payload. This is fine because settings is the last param of the extrinsic
                 tracing::info!("payload before fuel tank: {}", hex::encode(&payload));
+
+                // remove the last byte of the payload because it is the settings param, and we are
+                // replacing it
+                payload.pop();
+
+                // append to the payload. This is fine because settings is the last param of the extrinsic
                 payload.extend_from_slice(&Some(settings).encode());
                 tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
             }
