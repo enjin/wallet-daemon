@@ -4928,6 +4928,7 @@ dependencies = [
  "graphql_client",
  "hex",
  "lru 0.16.2",
+ "parity-scale-codec",
  "reqwest",
  "rpassword",
  "serde",

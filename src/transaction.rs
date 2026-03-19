@@ -7,12 +7,14 @@ use backoff::exponential::ExponentialBackoff;
 use backoff::SystemClock;
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
+use parity_scale_codec::Encode;
 use reqwest::{Client, Response};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use subxt::blocks::Block;
 use subxt::config::DefaultExtrinsicParamsBuilder;
-use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
+use subxt::{tx::TxStatus, Error, OnlineClient, PolkadotConfig};
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -350,8 +352,8 @@ impl TransactionProcessor {
             let TransactionRequest {
                 request_id,
                 external_id,
-                payload,
-                fuel_tank_owner_external_id: _,
+                mut payload,
+                fuel_tank_owner_external_id,
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
 
@@ -386,6 +388,25 @@ impl TransactionProcessor {
                 let acc_format = trim_account(public_key.clone());
                 tracing::warn!("Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
                 tracker.put(public_key.clone(), correct_nonce + 1);
+            }
+
+            if let Some(fuel_tank_owner_external_id) = fuel_tank_owner_external_id {
+                let expiration_block = match chain_client.blocks().at_latest().await {
+                    Ok(block) => block.number() + TX_MORTALITY as u32,
+                    Err(e) => {
+                        tracing::error!("failed to get block number");
+                        continue;
+                    }
+                };
+                let mut message = payload.clone();
+                message.extend_from_slice(public_key.as_bytes());
+                message.extend_from_slice(&expiration_block.encode());
+
+                let settings = fuel_tank::DispatchSettings {
+                    signature: None,
+                    ..Default::default()
+                };
+                // TODO: add signature, modify payload
             }
 
             let params = DefaultExtrinsicParamsBuilder::new()
@@ -425,6 +446,7 @@ impl TransactionProcessor {
                 format!("0x{}", hex::encode(signed_dummy_tx.encoded()))
             };
             let encoded_tx = hex::encode(signed_tx.encoded());
+
             tracing::info!(
                 "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
                 request_id,
@@ -565,4 +587,34 @@ impl TransactionProcessor {
 
 fn trim_account(account: String) -> String {
     format!("0x{}...{}", &account[..4], &account[60..])
+}
+
+mod fuel_tank {
+    use super::*;
+    use sp_core::sr25519::Signature;
+    use sp_core::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+
+    type BlockNumber = u32;
+
+    #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug, DecodeWithMemTracking, MaxEncodedLen)]
+    pub struct ExpirableSignature {
+        /// The actual signature data
+        pub signature: Signature,
+        /// The block number at which this signature expires
+        pub expiry_block: BlockNumber,
+    }
+
+    #[derive(
+        Clone, Eq, PartialEq, Encode, Decode, MaxEncodedLen, DecodeWithMemTracking, Default,
+    )]
+    /// Settings for a dispatch call
+    pub struct DispatchSettings {
+        /// Dispatch from the `None` origin
+        pub use_none_origin: bool,
+        /// Pay remaining fee for transaction if the fuel tank does not have enough funds
+        pub pays_remaining_fee: bool,
+        /// The signature for evaluating along with expiry block
+        /// [`RequireSignatureRule`](crate::RequireSignatureRule)
+        pub signature: Option<ExpirableSignature>,
+    }
 }
