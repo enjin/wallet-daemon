@@ -619,8 +619,24 @@ fn trim_account(account: String) -> String {
 mod fuel_tank {
     use sp_core::sr25519::Signature;
     use sp_core::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+    use subxt::utils::{AccountId32, MultiAddress};
 
     type BlockNumber = u32;
+
+    #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug, DecodeWithMemTracking, MaxEncodedLen)]
+    pub struct CallIndex {
+        pub pallet_index: u8,
+        pub extrinsic_index: u8,
+    }
+
+    #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug)]
+    pub struct DispatchTx {
+        pub call_index: CallIndex,
+        pub tank_id: MultiAddress<AccountId32, u32>,
+        pub rule_set_id: u32,
+        pub inner_call_index: CallIndex,
+        pub inner_call: Vec<u8>,
+    }
 
     #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug, DecodeWithMemTracking, MaxEncodedLen)]
     pub struct ExpirableSignature {
