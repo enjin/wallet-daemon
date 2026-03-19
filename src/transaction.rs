@@ -2,6 +2,7 @@ use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::sign_transactions::TransactionStateEnum;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
+use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::{platform_client, SubscriptionParams, DUMMY_TX_MORTALITY, TX_MORTALITY};
 use backoff::exponential::ExponentialBackoff;
 use backoff::SystemClock;
@@ -12,9 +13,8 @@ use reqwest::{Client, Response};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use subxt::blocks::Block;
 use subxt::config::DefaultExtrinsicParamsBuilder;
-use subxt::{tx::TxStatus, Error, OnlineClient, PolkadotConfig};
+use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -51,7 +51,7 @@ pub struct TransactionRequest {
     external_id: Option<String>,
     payload: Vec<u8>,
     /// If this is Some, the extrinsic is a dispatch from fuel tanks and needs the signature added
-    pub fuel_tank_owner_external_id: Option<String>,
+    pub fuel_tank_owner_external_id: Option<Option<String>>,
 }
 
 impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for TransactionRequest {
@@ -69,8 +69,7 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
             payload: hex::decode(data.encoded_data.split('x').nth(1).unwrap())?,
             fuel_tank_owner_external_id: data
                 .should_sign_fuel_tank
-                .then_some(data.fuel_tank_owner_external_id)
-                .flatten(),
+                .then_some(data.fuel_tank_owner_external_id),
         })
     }
 }
@@ -391,22 +390,45 @@ impl TransactionProcessor {
             }
 
             if let Some(fuel_tank_owner_external_id) = fuel_tank_owner_external_id {
+                // expiration block is needed for the signature
                 let expiration_block = match chain_client.blocks().at_latest().await {
                     Ok(block) => block.number() + TX_MORTALITY as u32,
                     Err(e) => {
-                        tracing::error!("failed to get block number");
+                        tracing::error!("failed to get block number: {e}");
                         continue;
                     }
                 };
+
+                // create message to be signed
                 let mut message = payload.clone();
                 message.extend_from_slice(public_key.as_bytes());
                 message.extend_from_slice(&expiration_block.encode());
 
+                // sign by the fuel tank external id if it exists
+                let signer = if let Some(external_id) = fuel_tank_owner_external_id {
+                    let derive_junction = match external_id.parse::<i64>() {
+                        Ok(id) => DeriveJunction::soft(id),
+                        Err(_) => DeriveJunction::soft(external_id),
+                    };
+
+                    keypair.derive([derive_junction])
+                } else {
+                    keypair.clone()
+                };
+                let signature = sp_core::sr25519::Signature::from_raw(signer.sign(&message).0);
+
                 let settings = fuel_tank::DispatchSettings {
-                    signature: None,
+                    signature: Some(ExpirableSignature {
+                        signature,
+                        expiry_block: expiration_block,
+                    }),
                     ..Default::default()
                 };
-                // TODO: add signature, modify payload
+
+                // append to the payload. This is fine because settings is the last param of the extrinsic
+                tracing::info!("payload before fuel tank: {}", hex::encode(&payload));
+                payload.extend_from_slice(&Some(settings).encode());
+                tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
             }
 
             let params = DefaultExtrinsicParamsBuilder::new()
@@ -590,7 +612,6 @@ fn trim_account(account: String) -> String {
 }
 
 mod fuel_tank {
-    use super::*;
     use sp_core::sr25519::Signature;
     use sp_core::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 
