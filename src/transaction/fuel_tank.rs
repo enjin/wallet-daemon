@@ -83,17 +83,22 @@ mod tests {
             args: vec![1, 2, 3],
         };
         assert_eq!(inner_call.encode(), vec![0, 0, 12, 1, 2, 3]);
-        assert_eq!(
-            DispatchTx::decode(&mut &data[..]).unwrap(),
-            DispatchTx {
-                call_index: CallIndex {
-                    pallet_index: 54,
-                    extrinsic_index: 5
-                },
-                tank_id: MultiAddress::Id(AccountId32(tank_id)),
-                rule_set_id: 0,
-                inner_call,
-            }
+        let tx = DispatchTx {
+            call_index: CallIndex {
+                pallet_index: 54,
+                extrinsic_index: 5,
+            },
+            tank_id: MultiAddress::Id(AccountId32(tank_id)),
+            rule_set_id: 0,
+            inner_call,
+        };
+        assert_eq!(DispatchTx::decode(&mut &data[..]).unwrap(), tx);
+
+        let account = hex!("8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a48");
+        let output = create_message(&tx.encode(), account, 10).unwrap();
+        let expected = hex!(
+            "00000c0102038eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a480a000000"
         );
+        assert_eq!(output, expected);
     }
 }

@@ -18,10 +18,9 @@ use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::time::{interval, sleep};
+use tokio::time::interval;
 
 const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
-const BLOCK_TIME_MS: u64 = 12000;
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
@@ -320,8 +319,9 @@ impl TransactionProcessor {
                 };
                 let signature = sp_core::sr25519::Signature::from_raw(signer.sign(&message).0);
                 tracing::info!(
-                    "fuel tanks - signed message {} with {public_key} and got signature {}",
+                    "fuel tanks - signed message {} with {} and got signature {}",
                     hex::encode(&message),
+                    hex::encode(signer.public_key().0),
                     hex::encode(signature)
                 );
 
@@ -402,9 +402,6 @@ impl TransactionProcessor {
     async fn launch_job_scheduler(mut self) {
         let nonce_tracker: Arc<Mutex<LruCache<String, u64>>> =
             Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
-
-        tracing::info!("Waiting for 2 blocks to get correct initial nonce");
-        sleep(Duration::from_millis(BLOCK_TIME_MS * 2)).await;
 
         while let Some(requests) = self.receiver.recv().await {
             tokio::spawn(Self::transaction_handler(
