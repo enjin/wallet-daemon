@@ -1,3 +1,5 @@
+mod fuel_tank;
+
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::sign_transactions::TransactionStateEnum;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
@@ -399,10 +401,16 @@ impl TransactionProcessor {
                     }
                 };
 
+                // remove the last byte of the payload because it is the settings param, and we are
+                // replacing it
+                payload.pop();
+
                 // create message to be signed
-                let mut message = payload.clone();
-                message.extend_from_slice(public_key.as_bytes());
-                message.extend_from_slice(&expiration_block.encode());
+                let Ok(message) =
+                    fuel_tank::create_message(&payload, &public_key, expiration_block)
+                else {
+                    continue;
+                };
 
                 // sign by the fuel tank external id if it exists
                 let signer = if let Some(external_id) = fuel_tank_owner_external_id {
@@ -426,10 +434,6 @@ impl TransactionProcessor {
                 };
 
                 tracing::info!("payload before fuel tank: {}", hex::encode(&payload));
-
-                // remove the last byte of the payload because it is the settings param, and we are
-                // replacing it
-                payload.pop();
 
                 // append to the payload. This is fine because settings is the last param of the extrinsic
                 payload.extend_from_slice(&Some(settings).encode());
@@ -614,49 +618,4 @@ impl TransactionProcessor {
 
 fn trim_account(account: String) -> String {
     format!("0x{}...{}", &account[..4], &account[60..])
-}
-
-mod fuel_tank {
-    use sp_core::sr25519::Signature;
-    use sp_core::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
-    use subxt::utils::{AccountId32, MultiAddress};
-
-    type BlockNumber = u32;
-
-    #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug, DecodeWithMemTracking, MaxEncodedLen)]
-    pub struct CallIndex {
-        pub pallet_index: u8,
-        pub extrinsic_index: u8,
-    }
-
-    #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug)]
-    pub struct DispatchTx {
-        pub call_index: CallIndex,
-        pub tank_id: MultiAddress<AccountId32, u32>,
-        pub rule_set_id: u32,
-        pub inner_call_index: CallIndex,
-        pub inner_call: Vec<u8>,
-    }
-
-    #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug, DecodeWithMemTracking, MaxEncodedLen)]
-    pub struct ExpirableSignature {
-        /// The actual signature data
-        pub signature: Signature,
-        /// The block number at which this signature expires
-        pub expiry_block: BlockNumber,
-    }
-
-    #[derive(
-        Clone, Eq, PartialEq, Encode, Decode, MaxEncodedLen, DecodeWithMemTracking, Default,
-    )]
-    /// Settings for a dispatch call
-    pub struct DispatchSettings {
-        /// Dispatch from the `None` origin
-        pub use_none_origin: bool,
-        /// Pay remaining fee for transaction if the fuel tank does not have enough funds
-        pub pays_remaining_fee: bool,
-        /// The signature for evaluating along with expiry block
-        /// [`RequireSignatureRule`](crate::RequireSignatureRule)
-        pub signature: Option<ExpirableSignature>,
-    }
 }
