@@ -24,13 +24,11 @@ pub async fn sign_transactions(
     client: Client,
     platform_url: String,
     platform_token: String,
-    transaction: SignTransactionInput,
+    transactions: Vec<SignTransactionInput>,
 ) {
-    let uuid = transaction.uuid.clone();
+    let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
-    let request_body = SignTransactions::build_query(sign_transactions::Variables {
-        transactions: vec![transaction],
-    });
+    let request_body = SignTransactions::build_query(sign_transactions::Variables { transactions });
 
     let res = (|| async {
         client
@@ -50,7 +48,9 @@ pub async fn sign_transactions(
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!("Signed transaction #{}", uuid);
+                for uuid in uuids {
+                    tracing::info!("Signed transaction #{}", uuid);
+                }
             }
             Err(e) => {
                 tracing::error!("Error decoding response of the platform: {:?}", e);

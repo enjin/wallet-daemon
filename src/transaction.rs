@@ -5,8 +5,6 @@ use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::{platform_client, SubscriptionParams, DUMMY_TX_MORTALITY, TX_MORTALITY};
-use backoff::exponential::ExponentialBackoff;
-use backoff::SystemClock;
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
@@ -15,7 +13,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
-use subxt::{tx::TxStatus, OnlineClient, PolkadotConfig};
+use subxt::{OnlineClient, PolkadotConfig};
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -28,15 +26,6 @@ const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
 struct Wrapper(Vec<u8>);
-
-struct SubmitResult {
-    hash: String,
-    // TODO: remove these fields
-    #[allow(dead_code)]
-    correct_nonce: u64,
-    #[allow(dead_code)]
-    encoded_tx: String,
-}
 
 impl subxt::tx::Payload for Wrapper {
     fn encode_call_data_to(
@@ -245,101 +234,6 @@ impl TransactionProcessor {
         }
     }
 
-    async fn submit_and_watch(
-        platform_client: Client,
-        platform_url: String,
-        platform_token: String,
-        chain_client: Arc<OnlineClient<PolkadotConfig>>,
-        keypair: Keypair,
-        request_id: String,
-        payload: Vec<u8>,
-        correct_nonce: u64,
-        encoded_tx: String,
-        dummy_tx: String,
-    ) -> Result<SubmitResult, Box<dyn std::error::Error + Send + Sync>> {
-        let params = DefaultExtrinsicParamsBuilder::new()
-            .nonce(correct_nonce)
-            .mortal(64)
-            .build();
-
-        let signed_tx = chain_client
-            .tx()
-            .create_signed(&Wrapper(payload), &keypair, params)
-            .await?;
-        tracing::info!(
-            "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
-            request_id,
-            correct_nonce,
-            encoded_tx
-        );
-
-        let mut transaction = signed_tx.submit_and_watch().await?;
-        while let Some(status) = transaction.next().await {
-            match status? {
-                TxStatus::Validated => {
-                    let trimmed = trim_account(hex::encode(keypair.public_key().0));
-                    tracing::info!(
-                        "Sent transaction #{} with nonce {} signed by {}",
-                        request_id,
-                        correct_nonce,
-                        trimmed
-                    );
-                }
-                TxStatus::Invalid { message } => {
-                    tracing::error!("Transaction #{} is INVALID: {:?}", request_id, message);
-                }
-                TxStatus::Broadcasted => {
-                    tracing::info!("Transaction #{} has been BROADCASTED", request_id);
-
-                    platform_client::sign_transactions(
-                        platform_client.clone(),
-                        platform_url.clone(),
-                        platform_token.clone(),
-                        SignTransactionInput {
-                            uuid: request_id.clone(),
-                            signed_extrinsic: format!("0x{encoded_tx}"),
-                            signed_abandon_extrinsic: dummy_tx.clone(),
-                        },
-                    )
-                    .await;
-                }
-                TxStatus::InBestBlock(block) => {
-                    tracing::info!(
-                        "Transaction #{} is now InBestBlock: {:?}",
-                        request_id,
-                        block.block_hash()
-                    );
-                    return Ok(SubmitResult {
-                        hash: hex::encode(block.extrinsic_hash().0),
-                        correct_nonce,
-                        encoded_tx,
-                    });
-                }
-                TxStatus::NoLongerInBestBlock => {
-                    tracing::error!("Transaction #{} no longer InBestBlock", request_id)
-                }
-                TxStatus::Dropped { message } => {
-                    tracing::error!(
-                        "Transaction #{} has been DROPPED: {:?}",
-                        request_id,
-                        message
-                    )
-                }
-                TxStatus::InFinalizedBlock(in_block) => tracing::info!(
-                    "Transaction #{} with hash {:?} was included at block: {:?}",
-                    request_id,
-                    in_block.extrinsic_hash(),
-                    in_block.block_hash()
-                ),
-                TxStatus::Error { message } => {
-                    tracing::error!("Transaction #{} has an ERROR: {:?}", request_id, message)
-                }
-            }
-        }
-
-        Err(format!("Transaction #{} could not be signed or sent", request_id).into())
-    }
-
     async fn transaction_handler(
         chain_client: Arc<OnlineClient<PolkadotConfig>>,
         platform_client: Client,
@@ -349,6 +243,7 @@ impl TransactionProcessor {
         platform_token: String,
         requests: Vec<TransactionRequest>,
     ) {
+        let mut inputs = Vec::with_capacity(requests.len());
         for request in requests {
             let TransactionRequest {
                 request_id,
@@ -484,111 +379,25 @@ impl TransactionProcessor {
                 correct_nonce,
                 encoded_tx
             );
-
-            let res = backoff::future::retry(Self::default_backoff(), || async {
-                match Self::submit_and_watch(
-                    platform_client.clone(),
-                    platform_url.clone(),
-                    platform_token.clone(),
-                    Arc::clone(&chain_client),
-                    signer.clone(),
-                    request_id.clone(),
-                    payload.clone(),
-                    correct_nonce,
-                    encoded_tx.clone(),
-                    dummy_tx.clone(),
-                )
-                .await
-                {
-                    Ok(result) => Ok(result),
-                    Err(e) => {
-                        nonce_tracker
-                            .lock()
-                            .unwrap()
-                            .put(hex::encode(signer.public_key().0), 0);
-                        tracing::info!(
-                            "Resetting cached nonce from {} to 0",
-                            hex::encode(signer.public_key().0)
-                        );
-                        tracing::error!(
-                            "Error submitting transaction #{} from account {} payload: 0x{}",
-                            request_id,
-                            trim_account(hex::encode(signer.public_key().0)),
-                            hex::encode(payload.clone())
-                        );
-                        tracing::error!("{:?}", e);
-                        Err(backoff::Error::transient(e))
-                    }
-                }
-            })
-            .await;
-
-            let signing_account = hex::encode(signer.public_key().0);
-            let account = format!("0x{signing_account}");
-
-            match res {
-                Ok(SubmitResult {
-                    hash,
-                    correct_nonce: _,
-                    encoded_tx: _,
-                }) => {
-                    let trimmed_hash = trim_account(hash.clone());
-                    let trimmed_account = trim_account(account.clone());
-
-                    tracing::info!(
-                        "Transaction #{} hash {} signed with account {} setting it to EXECUTED",
-                        request_id,
-                        trimmed_hash,
-                        trimmed_account
-                    );
-
-                    // platform_client::sign_transactions(
-                    //     platform_client.clone(),
-                    //     platform_url.clone(),
-                    //     platform_token.clone(),
-                    //     SignTransactionInput {
-                    //         uuid: request_id.clone(),
-                    //         signed_extrinsic: format!("0x{encoded_tx}"),
-                    //         nonce: correct_nonce as i64,
-                    //         state: TransactionStateEnum::EXECUTED,
-                    //         signed_abandon_extrinsic: dummy_tx.clone(),
-                    //     },
-                    // )
-                    // .await;
-                }
-                Err(_) => {
-                    tracing::error!(
-                        "Transaction #{} failed to sign with account {} setting it to ABANDONED",
-                        request_id,
-                        trim_account(account.clone())
-                    );
-
-                    // platform_client::sign_transactions(
-                    //     platform_client.clone(),
-                    //     platform_url.clone(),
-                    //     platform_token.clone(),
-                    //     SignTransactionInput {
-                    //         uuid: request_id.clone(),
-                    //         signed_extrinsic: format!("0x{encoded_tx}"),
-                    //         nonce: correct_nonce as i64,
-                    //         state: TransactionStateEnum::ABANDONED,
-                    //         signed_abandon_extrinsic: dummy_tx.clone(),
-                    //     },
-                    // )
-                    // .await;
-                }
-            }
+            tracing::info!(
+                "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
+                request_id,
+                correct_nonce,
+                encoded_tx
+            );
+            inputs.push(SignTransactionInput {
+                uuid: request_id.clone(),
+                signed_extrinsic: format!("0x{encoded_tx}"),
+                signed_abandon_extrinsic: dummy_tx.clone(),
+            });
         }
-    }
-
-    fn default_backoff() -> ExponentialBackoff<SystemClock> {
-        let setting = backoff::ExponentialBackoffBuilder::new()
-            .with_initial_interval(Duration::from_secs(6))
-            .with_randomization_factor(0.2)
-            .with_multiplier(2.0)
-            .with_max_elapsed_time(Some(Duration::from_secs(120)))
-            .build();
-        setting
+        platform_client::sign_transactions(
+            platform_client.clone(),
+            platform_url.clone(),
+            platform_token.clone(),
+            inputs,
+        )
+        .await;
     }
 
     async fn launch_job_scheduler(mut self) {
