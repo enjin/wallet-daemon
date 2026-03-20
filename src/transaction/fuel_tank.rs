@@ -53,6 +53,7 @@ pub fn create_message(
     let mut message = tx.inner_call.encode();
     message.extend_from_slice(&public_key);
     message.extend_from_slice(&expiration_block.encode());
+
     Ok(message)
 }
 

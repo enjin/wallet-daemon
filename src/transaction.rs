@@ -319,6 +319,11 @@ impl TransactionProcessor {
                     keypair.clone()
                 };
                 let signature = sp_core::sr25519::Signature::from_raw(signer.sign(&message).0);
+                tracing::info!(
+                    "fuel tanks - signed message {} with {public_key} and got signature {}",
+                    hex::encode(&message),
+                    hex::encode(signature)
+                );
 
                 let settings = fuel_tank::DispatchSettings {
                     signature: Some(ExpirableSignature {
@@ -373,12 +378,6 @@ impl TransactionProcessor {
             };
             let encoded_tx = hex::encode(signed_tx.encoded());
 
-            tracing::info!(
-                "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
-                request_id,
-                correct_nonce,
-                encoded_tx
-            );
             tracing::info!(
                 "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
                 request_id,
