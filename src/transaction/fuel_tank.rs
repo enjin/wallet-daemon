@@ -50,6 +50,12 @@ pub fn create_message(
         }
     };
 
+    tracing::info!(
+        "fuel tank - creating message from inner_call: {}, public_key {}, expiration block: {}",
+        hex::encode(tx.inner_call.encode()),
+        hex::encode(public_key),
+        expiration_block
+    );
     let mut message = tx.inner_call.encode();
     message.extend_from_slice(&public_key);
     message.extend_from_slice(&expiration_block.encode());
