@@ -1,3 +1,4 @@
+use parity_scale_codec::{Decode as CodecDecode, Error, Input};
 use sp_core::sr25519::Signature;
 use sp_core::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use subxt::utils::{AccountId32, MultiAddress};
@@ -10,10 +11,31 @@ pub struct CallIndex {
     pub extrinsic_index: u8,
 }
 
-#[derive(Clone, Eq, Encode, Decode, PartialEq, Debug, DecodeWithMemTracking)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub struct InnerCall {
     pub call_index: CallIndex,
     pub args: Vec<u8>,
+}
+
+impl Encode for InnerCall {
+    fn encode(&self) -> Vec<u8> {
+        let mut result = self.call_index.encode();
+        result.extend_from_slice(&self.args);
+        result
+    }
+}
+
+impl Decode for InnerCall {
+    fn decode<I: Input>(input: &mut I) -> Result<Self, Error> {
+        let call_index = CallIndex {
+            pallet_index: Decode::decode(input)?,
+            extrinsic_index: Decode::decode(input)?,
+        };
+        let remaining = input.remaining_len()?.unwrap_or(0);
+        let mut args = vec![0u8; remaining];
+        input.read(&mut args)?;
+        Ok(Self { call_index, args })
+    }
 }
 
 #[derive(Clone, Eq, Encode, Decode, PartialEq, Debug)]
@@ -70,10 +92,6 @@ mod tests {
 
     #[test]
     fn test_decode_dispatch_tx() {
-        // a call to fuel tanks dispatch system.remark with args 1, 2, 3
-        let mut data = hex!("360500a82a0376985e4bdca417ceebc52499664ac78437e5ae074de72907a1b42b643e0000000000000c01020300").to_vec();
-        // remove the settings arg
-        data.pop();
         let tank_id = hex!("a82a0376985e4bdca417ceebc52499664ac78437e5ae074de72907a1b42b643e");
         let inner_call = InnerCall {
             call_index: CallIndex {
@@ -82,7 +100,7 @@ mod tests {
             },
             args: vec![1, 2, 3],
         };
-        assert_eq!(inner_call.encode(), vec![0, 0, 12, 1, 2, 3]);
+        assert_eq!(inner_call.encode(), vec![0, 0, 1, 2, 3]);
         let tx = DispatchTx {
             call_index: CallIndex {
                 pallet_index: 54,
@@ -92,12 +110,14 @@ mod tests {
             rule_set_id: 0,
             inner_call,
         };
+
+        let data = tx.encode();
         assert_eq!(DispatchTx::decode(&mut &data[..]).unwrap(), tx);
 
         let account = hex!("8eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a48");
-        let output = create_message(&tx.encode(), account, 10).unwrap();
+        let output = create_message(&data, account, 10).unwrap();
         let expected = hex!(
-            "00000c0102038eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a480a000000"
+            "00000102038eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a480a000000"
         );
         assert_eq!(output, expected);
     }
