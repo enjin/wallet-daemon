@@ -99,8 +99,6 @@ input PopulateManagedWalletInput {
 input SignTransactionInput {
     uuid: String!
     signedExtrinsic: String!
-    nonce: Int!
-    state: TransactionStateEnum!
     signedAbandonExtrinsic: String!
 }
 

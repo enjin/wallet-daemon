@@ -128,7 +128,7 @@ pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, Str
         config.node,
         config.relay_node,
         config.api,
-        env::var(PLATFORM_KEY).unwrap_or_default(),
+        format!("Bearer {}", env::var(PLATFORM_KEY).unwrap_or_default()),
     )
 }
 

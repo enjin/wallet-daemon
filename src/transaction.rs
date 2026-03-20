@@ -1,7 +1,6 @@
 mod fuel_tank;
 
 use crate::graphql::sign_transactions::SignTransactionInput;
-use crate::graphql::sign_transactions::TransactionStateEnum;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::transaction::fuel_tank::ExpirableSignature;
@@ -32,7 +31,10 @@ struct Wrapper(Vec<u8>);
 
 struct SubmitResult {
     hash: String,
+    // TODO: remove these fields
+    #[allow(dead_code)]
     correct_nonce: u64,
+    #[allow(dead_code)]
     encoded_tx: String,
 }
 
@@ -296,8 +298,6 @@ impl TransactionProcessor {
                         SignTransactionInput {
                             uuid: request_id.clone(),
                             signed_extrinsic: format!("0x{encoded_tx}"),
-                            nonce: correct_nonce as i64,
-                            state: TransactionStateEnum::BROADCAST,
                             signed_abandon_extrinsic: dummy_tx.clone(),
                         },
                     )
@@ -529,8 +529,8 @@ impl TransactionProcessor {
             match res {
                 Ok(SubmitResult {
                     hash,
-                    correct_nonce,
-                    encoded_tx,
+                    correct_nonce: _,
+                    encoded_tx: _,
                 }) => {
                     let trimmed_hash = trim_account(hash.clone());
                     let trimmed_account = trim_account(account.clone());
@@ -542,19 +542,19 @@ impl TransactionProcessor {
                         trimmed_account
                     );
 
-                    platform_client::sign_transactions(
-                        platform_client.clone(),
-                        platform_url.clone(),
-                        platform_token.clone(),
-                        SignTransactionInput {
-                            uuid: request_id.clone(),
-                            signed_extrinsic: format!("0x{encoded_tx}"),
-                            nonce: correct_nonce as i64,
-                            state: TransactionStateEnum::EXECUTED,
-                            signed_abandon_extrinsic: dummy_tx.clone(),
-                        },
-                    )
-                    .await;
+                    // platform_client::sign_transactions(
+                    //     platform_client.clone(),
+                    //     platform_url.clone(),
+                    //     platform_token.clone(),
+                    //     SignTransactionInput {
+                    //         uuid: request_id.clone(),
+                    //         signed_extrinsic: format!("0x{encoded_tx}"),
+                    //         nonce: correct_nonce as i64,
+                    //         state: TransactionStateEnum::EXECUTED,
+                    //         signed_abandon_extrinsic: dummy_tx.clone(),
+                    //     },
+                    // )
+                    // .await;
                 }
                 Err(_) => {
                     tracing::error!(
@@ -563,19 +563,19 @@ impl TransactionProcessor {
                         trim_account(account.clone())
                     );
 
-                    platform_client::sign_transactions(
-                        platform_client.clone(),
-                        platform_url.clone(),
-                        platform_token.clone(),
-                        SignTransactionInput {
-                            uuid: request_id.clone(),
-                            signed_extrinsic: format!("0x{encoded_tx}"),
-                            nonce: correct_nonce as i64,
-                            state: TransactionStateEnum::ABANDONED,
-                            signed_abandon_extrinsic: dummy_tx.clone(),
-                        },
-                    )
-                    .await;
+                    // platform_client::sign_transactions(
+                    //     platform_client.clone(),
+                    //     platform_url.clone(),
+                    //     platform_token.clone(),
+                    //     SignTransactionInput {
+                    //         uuid: request_id.clone(),
+                    //         signed_extrinsic: format!("0x{encoded_tx}"),
+                    //         nonce: correct_nonce as i64,
+                    //         state: TransactionStateEnum::ABANDONED,
+                    //         signed_abandon_extrinsic: dummy_tx.clone(),
+                    //     },
+                    // )
+                    // .await;
                 }
             }
         }

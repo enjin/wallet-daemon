@@ -1,5 +1,5 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
-use crate::graphql::sign_transactions::{SignTransactionInput, TransactionStateEnum};
+use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{
     populate_managed_wallets, sign_transactions, PopulateManagedWallets, SignTransactions,
 };
@@ -26,15 +26,7 @@ pub async fn sign_transactions(
     platform_token: String,
     transaction: SignTransactionInput,
 ) {
-    let (uuid, state) = (
-        transaction.uuid.clone(),
-        match transaction.state {
-            TransactionStateEnum::BROADCAST => "BROADCAST",
-            TransactionStateEnum::EXECUTED => "EXECUTED",
-            TransactionStateEnum::ABANDONED => "ABANDONED",
-            _ => "unknown",
-        },
-    );
+    let uuid = transaction.uuid.clone();
 
     let request_body = SignTransactions::build_query(sign_transactions::Variables {
         transactions: vec![transaction],
@@ -58,7 +50,7 @@ pub async fn sign_transactions(
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!("Updated transaction #{} with state: {:?}", uuid, state);
+                tracing::info!("Signed transaction #{}", uuid);
             }
             Err(e) => {
                 tracing::error!("Error decoding response of the platform: {:?}", e);
