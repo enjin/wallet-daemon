@@ -302,7 +302,7 @@ impl TransactionProcessor {
 
                 // create message to be signed
                 let Ok(message) =
-                    fuel_tank::create_message(&payload, &public_key, expiration_block)
+                    fuel_tank::create_message(&payload, signer.public_key().0, expiration_block)
                 else {
                     continue;
                 };

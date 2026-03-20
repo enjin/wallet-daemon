@@ -39,7 +39,7 @@ pub struct DispatchSettings {
 
 pub fn create_message(
     tx: &[u8],
-    public_key: &String,
+    public_key: [u8; 32],
     expiration_block: u32,
 ) -> Result<Vec<u8>, ()> {
     let tx = match DispatchTx::decode(&mut &tx[..]) {
@@ -51,7 +51,7 @@ pub fn create_message(
     };
 
     let mut message = tx.inner_call.encode();
-    message.extend_from_slice(public_key.as_bytes());
+    message.extend_from_slice(&public_key);
     message.extend_from_slice(&expiration_block.encode());
     Ok(message)
 }
@@ -68,7 +68,14 @@ mod tests {
         // remove the settings arg
         data.pop();
         let tank_id = hex!("a82a0376985e4bdca417ceebc52499664ac78437e5ae074de72907a1b42b643e");
-
+        let inner_call = InnerCall {
+            call_index: CallIndex {
+                pallet_index: 0,
+                extrinsic_index: 0,
+            },
+            args: vec![1, 2, 3],
+        };
+        assert_eq!(inner_call.encode(), vec![0, 0, 12, 1, 2, 3]);
         assert_eq!(
             DispatchTx::decode(&mut &data[..]).unwrap(),
             DispatchTx {
@@ -78,13 +85,7 @@ mod tests {
                 },
                 tank_id: MultiAddress::Id(AccountId32(tank_id)),
                 rule_set_id: 0,
-                inner_call: InnerCall {
-                    call_index: CallIndex {
-                        pallet_index: 0,
-                        extrinsic_index: 0
-                    },
-                    args: vec![1, 2, 3],
-                },
+                inner_call,
             }
         );
     }
