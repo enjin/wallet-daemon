@@ -12,7 +12,7 @@ query GetPendingTransactions($network: Network!, $chain: Chain!, $limit: Int! = 
       uuid
       encodedData
       shouldSignFuelTank
-      fuelTankOwnerExternalId
+      fuelTankSignerExternalId
     }
     nextCursor
   }

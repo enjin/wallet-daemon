@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let (keypair, matrix_url, _relay_url, platform_url, platform_token) =
+    let (keypair, matrix_url, platform_url, platform_token) =
         load_wallet(load_config()).await;
 
     tracing_subscriber::fmt::init();
@@ -70,8 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
     // Setup matrix client and parameters
     let (matrix_client, matrix_subscription, matrix_sub_params) = setup_client(&matrix_url).await;
-    // Setup relay client and parameters
-    // let (relay_client, relay_subscription, relay_sub_params) = setup_client(&relay_url).await;
 
     let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(
         Arc::clone(&matrix_client),
@@ -81,29 +79,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         platform_token.clone(),
     );
 
-    // let (relay_tx_poller, relay_tx_processor) = TransactionJob::create_job(
-    //     Arc::clone(&relay_client),
-    //     Arc::clone(&relay_sub_params),
-    //     keypair.clone(),
-    //     platform_url.clone(),
-    //     platform_token.clone(),
-    // );
-
     let (wallet_poller, wallet_processor) =
         DeriveWalletJob::create_job(keypair, platform_url, platform_token);
 
     tokio::select! {
-        // r = relay_subscription.start() => {
-        //     let err = r.unwrap_err();
-        //     tracing::error!("Subscription job failed: {:?}", err);
-        // }
         m = matrix_subscription.start() => {
             let err = m.unwrap_err();
             tracing::error!("Subscription job failed: {:?}", err);
         }
 
-        // _ = relay_tx_poller.start() => {}
-        // _ =  relay_tx_processor.start() => {}
         _ = matrix_tx_poller.start() => {}
         _ =  matrix_tx_processor.start() => {}
         _ = wallet_poller.start() => {}

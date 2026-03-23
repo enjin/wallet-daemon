@@ -1,6 +1,5 @@
 {
-  "node": "wss://rpc.matrix.blockchain.enjin.io:443",
-  "relay_node": "wss://rpc.relay.blockchain.enjin.io:443",
-  "api": "https://platform.enjin.io/graphql",
+  "node": "wss://rpc.matrix.blockchain.enjin.io",
+  "api": "https://platform.enjin.io/graphql/daemon",
   "master_key": "store"
 }

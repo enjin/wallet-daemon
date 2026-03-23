@@ -43,7 +43,7 @@ pub struct TransactionRequest {
     external_id: Option<String>,
     payload: Vec<u8>,
     /// If this is Some, the extrinsic is a dispatch from fuel tanks and needs the signature added
-    pub fuel_tank_owner_external_id: Option<Option<String>>,
+    pub fuel_tank_signer_external_id: Option<Option<String>>,
 }
 
 impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for TransactionRequest {
@@ -59,9 +59,9 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
             external_id,
             request_id: data.uuid,
             payload: hex::decode(data.encoded_data.split('x').nth(1).unwrap())?,
-            fuel_tank_owner_external_id: data
+            fuel_tank_signer_external_id: data
                 .should_sign_fuel_tank
-                .then_some(data.fuel_tank_owner_external_id),
+                .then_some(data.fuel_tank_signer_external_id),
         })
     }
 }
@@ -143,7 +143,7 @@ impl TransactionJob {
                 Err(e) => {
                     if e.to_string() == NO_TRANSACTIONS_MSG {
                         tracing::info!(
-                            "MarkAndListPendingTransactions: {} for {}",
+                            "GetPendingTransactions: {} for {}",
                             NO_TRANSACTIONS_MSG,
                             self.network
                         );
@@ -248,7 +248,7 @@ impl TransactionProcessor {
                 request_id,
                 external_id,
                 mut payload,
-                fuel_tank_owner_external_id,
+                fuel_tank_signer_external_id,
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
 
@@ -285,7 +285,7 @@ impl TransactionProcessor {
                 tracker.put(public_key.clone(), correct_nonce + 1);
             }
 
-            if let Some(fuel_tank_owner_external_id) = fuel_tank_owner_external_id {
+            if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
                 // expiration block is needed for the signature
                 let expiration_block = match chain_client.blocks().at_latest().await {
                     Ok(block) => block.number() + TX_MORTALITY as u32,
@@ -307,7 +307,7 @@ impl TransactionProcessor {
                 };
 
                 // sign by the fuel tank external id if it exists
-                let signer = if let Some(external_id) = fuel_tank_owner_external_id {
+                let signer = if let Some(external_id) = fuel_tank_signer_external_id {
                     let derive_junction = match external_id.parse::<i64>() {
                         Ok(id) => DeriveJunction::soft(id),
                         Err(_) => DeriveJunction::soft(external_id),

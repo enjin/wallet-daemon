@@ -16,7 +16,6 @@ pub(crate) const PLATFORM_KEY: &str = "PLATFORM_KEY";
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct Configuration {
     node: String,
-    relay_node: String,
     master_key: PathBuf,
     api: String,
 }
@@ -98,7 +97,7 @@ async fn get_keys(key_store_path: &Path, password: SecretString) -> Keypair {
     keypair_tx
 }
 
-pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, String, String) {
+pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, String) {
     let version = env!("CARGO_PKG_VERSION");
     let password = get_password(KEY_PASS);
     let signer = get_keys(&config.master_key, password).await;
@@ -119,14 +118,12 @@ pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, Str
         hex::encode(public_key)
     );
     println!("** Matrixchain RPC          : {}", config.node);
-    println!("** Relaychain RPC           : {}", config.relay_node);
     println!("** Platform URL             : {}", config.api);
     println!("*****************************************************************");
 
     (
         signer,
         config.node,
-        config.relay_node,
         config.api,
         format!("Bearer {}", env::var(PLATFORM_KEY).unwrap_or_default()),
     )
