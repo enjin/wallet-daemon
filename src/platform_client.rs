@@ -1,4 +1,8 @@
-use crate::graphql::{set_wallet_account, update_transaction, SetWalletAccount, UpdateTransaction};
+use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
+use crate::graphql::sign_transactions::SignTransactionInput;
+use crate::graphql::{
+    populate_managed_wallets, sign_transactions, PopulateManagedWallets, SignTransactions,
+};
 use backon::{ExponentialBuilder, Retryable};
 use graphql_client::GraphQLQuery;
 use reqwest::Client;
@@ -16,33 +20,15 @@ impl PlatformExponentialBuilder {
     }
 }
 
-pub struct Transaction {
-    pub(crate) id: i64,
-    pub(crate) state: String,
-    pub(crate) hash: Option<String>,
-    pub(crate) signer: Option<String>,
-    pub(crate) signed_at: Option<i64>,
-}
-
-pub async fn update_transaction(
+pub async fn sign_transactions(
     client: Client,
     platform_url: String,
     platform_token: String,
-    transaction: Transaction,
+    transactions: Vec<SignTransactionInput>,
 ) {
-    let transaction_state = match transaction.state.as_str() {
-        "EXECUTED" => update_transaction::TransactionState::EXECUTED,
-        "BROADCAST" => update_transaction::TransactionState::BROADCAST,
-        _ => update_transaction::TransactionState::ABANDONED,
-    };
+    let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
-    let request_body = UpdateTransaction::build_query(update_transaction::Variables {
-        id: transaction.id,
-        state: Some(transaction_state),
-        transaction_hash: transaction.hash,
-        signing_account: transaction.signer,
-        signed_at_block: transaction.signed_at,
-    });
+    let request_body = SignTransactions::build_query(sign_transactions::Variables { transactions });
 
     let res = (|| async {
         client
@@ -57,16 +43,14 @@ pub async fn update_transaction(
 
     match res {
         Ok(res) => match res
-            .json::<graphql_client::Response<update_transaction::ResponseData>>()
+            .json::<graphql_client::Response<sign_transactions::ResponseData>>()
             .await
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!(
-                    "Updated transaction #{} with state: {}",
-                    transaction.id,
-                    transaction.state,
-                );
+                for uuid in uuids {
+                    tracing::info!("Signed transaction #{}", uuid);
+                }
             }
             Err(e) => {
                 tracing::error!("Error decoding response of the platform: {:?}", e);
@@ -76,18 +60,19 @@ pub async fn update_transaction(
     }
 }
 
-pub async fn set_wallet_account(
+pub async fn populate_managed_wallets(
     client: Client,
     platform_url: String,
     platform_token: String,
-    wallet_id: i64,
-    external_id: String,
-    account: String,
+    wallets: Vec<PopulateManagedWalletInput>,
 ) {
-    let request_body = SetWalletAccount::build_query(set_wallet_account::Variables {
-        id: wallet_id,
-        account: account.clone(),
-    });
+    let external_ids_and_accounts: Vec<(String, String)> = wallets
+        .iter()
+        .map(|x| (x.external_id.clone(), x.public_key.clone()))
+        .collect();
+
+    let request_body =
+        PopulateManagedWallets::build_query(populate_managed_wallets::Variables { wallets });
 
     let res = (|| async {
         client
@@ -102,14 +87,14 @@ pub async fn set_wallet_account(
 
     match res {
         Ok(res) => match res
-            .json::<graphql_client::Response<set_wallet_account::ResponseData>>()
+            .json::<graphql_client::Response<populate_managed_wallets::ResponseData>>()
             .await
         {
             Ok(r) => {
                 tracing::info!("Response from platform: {:?}", r);
-                tracing::info!(
-                    "Updated wallet {wallet_id} (externalId: {external_id}) to {account}"
-                );
+                for (external_id, account) in external_ids_and_accounts {
+                    tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
+                }
             }
             Err(e) => tracing::error!(
                 "Error decoding body {:?} of response to submitted account",

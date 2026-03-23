@@ -1,0 +1,3 @@
+mutation SetDaemonWalletAccount($publicKey: String!, $signedMessage: String!) {
+  result: SetDaemonWalletAccount(publicKey: $publicKey, signedMessage: $signedMessage)
+}

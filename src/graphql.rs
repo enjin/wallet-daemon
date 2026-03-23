@@ -3,39 +3,39 @@ use graphql_client::GraphQLQuery;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/mark_and_list_pending_transactions.graphql",
+    query_path = "graphql/get_pending_transactions.graphql",
     response_derives = "Debug"
 )]
-pub struct MarkAndListPendingTransactions;
+pub struct GetPendingTransactions;
 
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/update_transaction.graphql",
+    query_path = "graphql/sign_transactions.graphql",
     response_derives = "Debug"
 )]
-pub struct UpdateTransaction;
+pub struct SignTransactions;
 
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/update_user.graphql",
-    response_derives = "Debug"
+    query_path = "graphql/set_daemon_wallet_account.graphql",
+    response_derives = "Debug,Copy,Clone"
 )]
-pub struct UpdateUser;
+pub struct SetDaemonWalletAccount;
 
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/get_pending_wallets.graphql",
+    query_path = "graphql/get_pending_managed_wallet_creations.graphql",
     response_derives = "Debug"
 )]
-pub struct GetPendingWallets;
+pub struct GetPendingManagedWalletCreations;
 
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
-    query_path = "graphql/set_wallet_account.graphql",
+    query_path = "graphql/populate_managed_wallets.graphql",
     response_derives = "Debug"
 )]
-pub struct SetWalletAccount;
+pub struct PopulateManagedWallets;

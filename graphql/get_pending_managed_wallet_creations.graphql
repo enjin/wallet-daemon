@@ -1,0 +1,13 @@
+query GetPendingManagedWalletCreations($network: Network!, $chain: Chain!, $limit: Int! = 25, $cursor: String) {
+  result: GetPendingManagedWalletCreations(
+    network: $network
+    chain: $chain
+    limit: $limit
+    cursor: $cursor
+  ) {
+    data {
+      externalId
+    }
+    nextCursor
+  }
+}

@@ -3,18 +3,29 @@ schema {
   query: Query
 }
 
-enum TransactionState {
+enum Network {
+  CANARY
+  ENJIN
+}
+
+enum Chain {
+  MATRIX
+  RELAY
+}
+
+enum TransactionStateEnum {
   PENDING
   BROADCAST
   EXECUTED
-  ABANDONED
   FINALIZED
+  FAILED
+  ABANDONED
 }
 
 type Transaction {
   id: Int!
   transactionId: String
-  state: TransactionState!
+  state: TransactionStateEnum!
   transactionHash: String
   wallet: Wallet
   encodedData: String!
@@ -41,17 +52,6 @@ type PageInfo {
   endCursor: String!
 }
 
-type WalletEdge {
-  node: Wallet!
-  cursor: String!
-}
-
-type WalletConnection {
-  edges: [WalletEdge]!
-  pageInfo: PageInfo!
-  totalCount: Int
-}
-
 type TransactionEdge {
   node: Transaction!
   cursor: String!
@@ -63,28 +63,62 @@ type TransactionConnection {
   totalCount: Int
 }
 
+type PendingTransaction {
+  uuid: String!
+  encodedData: String!
+  wallet: ManagedWallet!
+  shouldSignFuelTank: Boolean!
+  fuelTankSignerExternalId: String
+}
+
+type PendingTransactionCursorPagination {
+  data: [PendingTransaction!]!
+  perPage: Int!
+  previousCursor: String
+  nextCursor: String
+}
+
+type ManagedWallet {
+  publicKey: String
+  externalId: String
+}
+
+type ManagedWalletCursorPagination {
+  data: [ManagedWallet!]!
+  perPage: Int!
+  previousCursor: String
+  nextCursor: String
+}
+
+input PopulateManagedWalletInput {
+    externalId: String!
+    publicKey: String!
+    signedMessage: String!
+}
+
+input SignTransactionInput {
+    uuid: String!
+    signedExtrinsic: String!
+    signedAbandonExtrinsic: String!
+}
+
 type Query {
-  GetPendingWallets(after: String, first: Int): WalletConnection
+  GetPendingTransactions(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): PendingTransactionCursorPagination
+  GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): ManagedWalletCursorPagination
 }
 
 type Mutation {
 
-  MarkAndListPendingTransactions(network: String, after: String, first: Int, markAsProcessing: Boolean): TransactionConnection
-
-  UpdateTransaction(
-    id: Int!
-    signingAccount: String
-    state: TransactionState
-    transactionHash: String
-    signedAtBlock: Int
+  SignTransactions(
+      transactions: [SignTransactionInput!]!
   ): Boolean!
 
-  SetWalletAccount(
-    id: Int!
-    account: String!
+  PopulateManagedWallets(
+      wallets: [PopulateManagedWalletInput!]!
   ): Boolean!
 
-  UpdateUser(
-    account: String!
+  SetDaemonWalletAccount(
+      publicKey: String!
+      signedMessage: String!
   ): Boolean!
 }
