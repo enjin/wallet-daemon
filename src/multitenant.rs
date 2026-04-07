@@ -25,7 +25,9 @@ async fn set_daemon_wallet_account(
         .await?;
 
     let result: Response<graphql::set_daemon_wallet_account::ResponseData> = res.json().await?;
-    let data = result.data.expect("There was an error updating your account. Please check your access token.");
+    let data = result
+        .data
+        .expect("There was an error updating your account. Please check your access token.");
 
     Ok(data.result)
 }

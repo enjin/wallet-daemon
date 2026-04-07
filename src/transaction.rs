@@ -4,7 +4,7 @@ use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::transaction::fuel_tank::ExpirableSignature;
-use crate::{platform_client, SubscriptionParams, DUMMY_TX_MORTALITY, TX_MORTALITY};
+use crate::{platform_client, DUMMY_TX_MORTALITY, TX_MORTALITY};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
@@ -13,7 +13,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
-use subxt::{OnlineClient, PolkadotConfig};
+use subxt::{OfflineClient, PolkadotConfig};
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -72,7 +72,6 @@ pub struct TransactionJob {
     sender: Sender<Vec<TransactionRequest>>,
     platform_url: String,
     platform_token: String,
-    network: Arc<Network>,
 }
 
 impl TransactionJob {
@@ -81,26 +80,22 @@ impl TransactionJob {
         sender: Sender<Vec<TransactionRequest>>,
         platform_url: String,
         platform_token: String,
-        network: Arc<Network>,
     ) -> Self {
         Self {
             client,
             sender,
             platform_url,
             platform_token,
-            network,
         }
     }
 
     pub fn create_job(
-        rpc: Arc<OnlineClient<PolkadotConfig>>,
-        block_sub: Arc<SubscriptionParams>,
+        rpc: Arc<OfflineClient<PolkadotConfig>>,
         keypair: Keypair,
         platform_url: String,
         platform_token: String,
     ) -> (TransactionJob, TransactionProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
-        let network = block_sub.get_network();
 
         (
             TransactionJob::new(
@@ -108,7 +103,6 @@ impl TransactionJob {
                 sender,
                 platform_url.clone(),
                 platform_token.clone(),
-                network,
             ),
             TransactionProcessor::new(
                 rpc,
@@ -145,7 +139,7 @@ impl TransactionJob {
                         tracing::info!(
                             "GetPendingTransactions: {} for {}",
                             NO_TRANSACTIONS_MSG,
-                            self.network
+                            Network::EnjinMatrix // TODO: update
                         );
                     } else {
                         tracing::error!("Error: {:?}", e);
@@ -206,7 +200,7 @@ impl TransactionJob {
 }
 
 pub struct TransactionProcessor {
-    chain_client: Arc<OnlineClient<PolkadotConfig>>,
+    chain_client: Arc<OfflineClient<PolkadotConfig>>,
     platform_client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
@@ -216,7 +210,7 @@ pub struct TransactionProcessor {
 
 impl TransactionProcessor {
     pub(crate) fn new(
-        rpc: Arc<OnlineClient<PolkadotConfig>>,
+        rpc: Arc<OfflineClient<PolkadotConfig>>,
         client: Client,
         keypair: Keypair,
         receiver: Receiver<Vec<TransactionRequest>>,
@@ -234,7 +228,7 @@ impl TransactionProcessor {
     }
 
     async fn transaction_handler(
-        chain_client: Arc<OnlineClient<PolkadotConfig>>,
+        chain_client: Arc<OfflineClient<PolkadotConfig>>,
         platform_client: Client,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
@@ -270,11 +264,12 @@ impl TransactionProcessor {
             );
 
             let public_key = hex::encode(signer.public_key().0);
-            let chain_nonce = chain_client
-                .tx()
-                .account_nonce(&signer.public_key().into())
-                .await
-                .unwrap();
+            // let chain_nonce = chain_client
+            //     .tx()
+            //     .account_nonce(&signer.public_key().into())
+            //     .await
+            //     .unwrap();
+            let chain_nonce = 0_u64; // TODO: this is temporary
             let correct_nonce: u64;
             {
                 let mut tracker = nonce_tracker.lock().unwrap();
@@ -287,13 +282,14 @@ impl TransactionProcessor {
 
             if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
                 // expiration block is needed for the signature
-                let expiration_block = match chain_client.blocks().at_latest().await {
-                    Ok(block) => block.number() + TX_MORTALITY as u32,
-                    Err(e) => {
-                        tracing::error!("failed to get block number: {e}");
-                        continue;
-                    }
-                };
+                // let expiration_block = match chain_client.blocks().at_latest().await {
+                //     Ok(block) => block.number() + TX_MORTALITY as u32,
+                //     Err(e) => {
+                //         tracing::error!("failed to get block number: {e}");
+                //         continue;
+                //     }
+                // };
+                let expiration_block = 0_u32;
 
                 // remove the last byte of the payload because it is the settings param, and we are
                 // replacing it
@@ -347,10 +343,9 @@ impl TransactionProcessor {
 
             let signed_tx = match chain_client
                 .tx()
-                .create_signed(&Wrapper(payload.clone()), &signer, params)
-                .await
+                .create_partial_offline(&Wrapper(payload.clone()), params)
             {
-                Ok(tx) => tx,
+                Ok(mut tx) => tx.sign(&signer),
                 Err(e) => {
                     tracing::error!("Failed to create signed transaction: {:?}", e);
                     continue;
@@ -365,10 +360,9 @@ impl TransactionProcessor {
                     .build();
                 let signed_dummy_tx = match chain_client
                     .tx()
-                    .create_signed(&Wrapper(payload), &signer, params)
-                    .await
+                    .create_partial_offline(&Wrapper(payload), params)
                 {
-                    Ok(tx) => tx,
+                    Ok(mut tx) => tx.sign(&signer),
                     Err(e) => {
                         tracing::error!("Failed to create signed dummy transaction: {:?}", e);
                         continue;

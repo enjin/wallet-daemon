@@ -1,47 +1,28 @@
 #![allow(missing_docs)]
+use parity_scale_codec::Decode;
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
 use std::time::Duration;
-use subxt::backend::rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient};
-use subxt::{OnlineClient, PolkadotConfig};
+use subxt::client::RuntimeVersion;
+use subxt::metadata::types::Metadata;
+use subxt::{OfflineClient, PolkadotConfig};
 use wallet_daemon::config_loader::{load_config, load_wallet};
-use wallet_daemon::{
-    set_multitenant, write_seed, DeriveWalletJob, SubscriptionJob, SubscriptionParams,
-    TransactionJob,
-};
+use wallet_daemon::{set_multitenant, write_seed, DeriveWalletJob, TransactionJob};
 
-async fn setup_client(
-    url: &str,
-) -> (
-    Arc<OnlineClient<PolkadotConfig>>,
-    SubscriptionJob,
-    Arc<SubscriptionParams>,
-) {
-    let rpc_client = RpcClient::builder()
-        .retry_policy(
-            ExponentialBackoff::from_millis(100)
-                .max_delay(Duration::from_secs(10))
-                .take(3),
-        )
-        .build(url.to_string())
-        .await
-        .unwrap();
-
-    let online_client = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client)
-        .await
-        .unwrap();
-
-    let runtime_updater = online_client.updater();
-    tokio::spawn(async move {
-        let _ = runtime_updater.perform_runtime_updates().await;
-    });
+async fn setup_client(url: &str) -> Arc<OfflineClient<PolkadotConfig>> {
+    let online_client = OfflineClient::<PolkadotConfig>::new(
+        Default::default(),
+        RuntimeVersion {
+            spec_version: 0,
+            transaction_version: 0,
+        },
+        Metadata::decode(&mut &[0_u8; 32][..]).unwrap(),
+    );
 
     let client = Arc::new(online_client);
-    let subscription = SubscriptionJob::create_job(Arc::clone(&client));
-    let sub_params = subscription.get_params();
 
-    (client, subscription, sub_params)
+    client
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -57,8 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let (keypair, matrix_url, platform_url, platform_token) =
-        load_wallet(load_config()).await;
+    let (keypair, matrix_url, platform_url, platform_token) = load_wallet(load_config()).await;
 
     tracing_subscriber::fmt::init();
     // Check if we are connecting to a multitenant platform
@@ -69,11 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await;
     // Setup matrix client and parameters
-    let (matrix_client, matrix_subscription, matrix_sub_params) = setup_client(&matrix_url).await;
+    // TODO: metadata will need to be updated when it changes
+    let matrix_client = setup_client(&matrix_url).await;
 
     let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(
         Arc::clone(&matrix_client),
-        Arc::clone(&matrix_sub_params),
         keypair.clone(),
         platform_url.clone(),
         platform_token.clone(),
@@ -83,11 +63,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         DeriveWalletJob::create_job(keypair, platform_url, platform_token);
 
     tokio::select! {
-        m = matrix_subscription.start() => {
-            let err = m.unwrap_err();
-            tracing::error!("Subscription job failed: {:?}", err);
-        }
-
         _ = matrix_tx_poller.start() => {}
         _ =  matrix_tx_processor.start() => {}
         _ = wallet_poller.start() => {}

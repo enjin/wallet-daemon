@@ -3,7 +3,6 @@ use crate::config_loader::{Chain, ConfigNetwork};
 pub use importer::write_seed;
 pub use multitenant::set_multitenant;
 pub use platform_client::{populate_managed_wallets, sign_transactions};
-pub use subscription::{SubscriptionJob, SubscriptionParams};
 pub use transaction::TransactionJob;
 pub use wallet::DeriveWalletJob;
 
