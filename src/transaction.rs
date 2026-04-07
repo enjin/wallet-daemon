@@ -24,16 +24,21 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
-struct Wrapper(Vec<u8>);
+struct PayloadWrapper(Vec<u8>);
 
-impl subxt::tx::Payload for Wrapper {
-    fn encode_call_data_to(
-        &self,
-        _metadata: &subxt::Metadata,
-        out: &mut Vec<u8>,
-    ) -> Result<(), subxt::ext::subxt_core::Error> {
-        out.extend_from_slice(&self.0);
-        Ok(())
+impl subxt::tx::Payload for PayloadWrapper {
+    type CallData = ();
+
+    fn pallet_name(&self) -> &str {
+        "0".to_string().leak()
+    }
+
+    fn call_name(&self) -> &str {
+        "0".to_string().leak()
+    }
+
+    fn call_data(&self) -> &Self::CallData {
+        &()
     }
 }
 
@@ -336,21 +341,6 @@ impl TransactionProcessor {
                 tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
             }
 
-            let params = DefaultExtrinsicParamsBuilder::new()
-                .nonce(correct_nonce)
-                .mortal(TX_MORTALITY)
-                .build();
-
-            let signed_tx = match chain_client
-                .tx()
-                .create_partial_offline(&Wrapper(payload.clone()), params)
-            {
-                Ok(mut tx) => tx.sign(&signer),
-                Err(e) => {
-                    tracing::error!("Failed to create signed transaction: {:?}", e);
-                    continue;
-                }
-            };
             let dummy_tx = {
                 // this is system.remark with empty value: 0x000000
                 let payload = vec![0, 0, 0];
@@ -358,17 +348,47 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal(DUMMY_TX_MORTALITY)
                     .build();
-                let signed_dummy_tx = match chain_client
+                let client_at_block = chain_client.at_block(0_u64).unwrap();
+                let signed_dummy_tx = match client_at_block
                     .tx()
-                    .create_partial_offline(&Wrapper(payload), params)
+                    .create_signable_offline(&PayloadWrapper(payload), params)
                 {
-                    Ok(mut tx) => tx.sign(&signer),
+                    Ok(mut tx) => match tx.sign(&signer) {
+                        Ok(signed) => signed,
+                        Err(e) => {
+                            tracing::error!("Failed to sign dummy transaction: {:?}", e);
+                            continue;
+                        }
+                    },
                     Err(e) => {
                         tracing::error!("Failed to create signed dummy transaction: {:?}", e);
                         continue;
                     }
                 };
                 format!("0x{}", hex::encode(signed_dummy_tx.encoded()))
+            };
+            let signed_tx = {
+                let params = DefaultExtrinsicParamsBuilder::new()
+                    .nonce(correct_nonce)
+                    .mortal(TX_MORTALITY)
+                    .build();
+                let client_at_block = chain_client.at_block(0_u64).unwrap();
+                match client_at_block
+                    .tx()
+                    .create_signable_offline(&PayloadWrapper(payload.clone()), params)
+                {
+                    Ok(mut tx) => match tx.sign(&signer) {
+                        Ok(signed) => signed,
+                        Err(e) => {
+                            tracing::error!("Failed to sign transaction: {:?}", e);
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to create signed transaction: {:?}", e);
+                        continue;
+                    }
+                }
             };
             let encoded_tx = hex::encode(signed_tx.encoded());
 
