@@ -4,7 +4,7 @@ use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::transaction::fuel_tank::ExpirableSignature;
-use crate::{platform_client, SubstrateClient, DUMMY_TX_MORTALITY, TX_MORTALITY};
+use crate::{global, platform_client, SubstrateClient, DUMMY_TX_MORTALITY, TX_MORTALITY};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
@@ -13,6 +13,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
+use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -23,21 +24,25 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
-struct PayloadWrapper(Vec<u8>);
+struct PayloadWrapper<'a> {
+    pub pallet_name: &'a str,
+    pub call_name: &'a str,
+    pub call_data: Vec<u8>,
+}
 
-impl subxt::tx::Payload for PayloadWrapper {
-    type CallData = ();
+impl subxt::tx::Payload for PayloadWrapper<'_> {
+    type CallData = Vec<u8>;
 
     fn pallet_name(&self) -> &str {
-        "0".to_string().leak()
+        self.pallet_name
     }
 
     fn call_name(&self) -> &str {
-        "0".to_string().leak()
+        self.call_name
     }
 
     fn call_data(&self) -> &Self::CallData {
-        &()
+        &self.call_data
     }
 }
 
@@ -344,6 +349,11 @@ impl TransactionProcessor {
             let dummy_tx = {
                 // this is system.remark with empty value: 0x000000
                 let payload = vec![0, 0, 0];
+                let payload = PayloadWrapper {
+                    pallet_name: "System",
+                    call_name: "remark",
+                    call_data: payload,
+                };
                 let params = DefaultExtrinsicParamsBuilder::new()
                     .nonce(correct_nonce)
                     .mortal(DUMMY_TX_MORTALITY)
@@ -351,7 +361,7 @@ impl TransactionProcessor {
                 let client_at_block = chain_client.at_block(block_temp).unwrap();
                 let signed_dummy_tx = match client_at_block
                     .tx()
-                    .create_signable_offline(&PayloadWrapper(payload), params)
+                    .create_signable_offline(&payload, params)
                 {
                     Ok(mut tx) => match tx.sign(&signer) {
                         Ok(signed) => signed,
@@ -368,14 +378,38 @@ impl TransactionProcessor {
                 format!("0x{}", hex::encode(signed_dummy_tx.encoded()))
             };
             let signed_tx = {
+                // contruct payload
+                let guard = global::METADATA.read().await;
+                let metadata = guard.as_ref().expect("metadata not set");
+                if payload.len() < 2 {
+                    tracing::error!("payload does not store pallet index and call index");
+                    continue;
+                }
+                let pallet_index = payload[0];
+                let call_index = payload[1];
+                let Ok(extrinsic_info) =
+                    metadata.extrinsic_call_info_by_index(pallet_index, call_index)
+                else {
+                    tracing::error!("extinsic at pallet index: {pallet_index}, call_index: {call_index}, not found");
+                    continue;
+                };
+                let payload = PayloadWrapper {
+                    pallet_name: &extrinsic_info.pallet_name,
+                    call_name: &extrinsic_info.call_name,
+                    call_data: payload,
+                };
+
+                // sign extrinsic
                 let params = DefaultExtrinsicParamsBuilder::new()
                     .nonce(correct_nonce)
                     .mortal(TX_MORTALITY)
                     .build();
-                let client_at_block = chain_client.at_block(block_temp).unwrap();
+                let client_at_block = chain_client
+                    .at_block(block_temp)
+                    .expect("client metadata or spec data missing");
                 match client_at_block
                     .tx()
-                    .create_signable_offline(&PayloadWrapper(payload.clone()), params)
+                    .create_signable_offline(&payload, params)
                 {
                     Ok(mut tx) => match tx.sign(&signer) {
                         Ok(signed) => signed,

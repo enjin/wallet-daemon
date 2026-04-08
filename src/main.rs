@@ -22,6 +22,7 @@ pub const DEFAULT_PLATFORM_URL: &str = "https://platform.enjin.io/graphql/daemon
 pub const TX_MORTALITY: u64 = 64;
 pub const DUMMY_TX_MORTALITY: u64 = 14_400;
 
+mod global;
 mod graphql;
 mod importer;
 mod multitenant;

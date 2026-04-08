@@ -1,10 +1,11 @@
-use crate::SubstrateClient;
+use crate::{global, SubstrateClient};
 use hex_literal::hex;
 use parity_scale_codec::Decode;
 use std::fmt::Debug;
 use std::sync::Arc;
 use subxt::config::substrate::SpecVersionForRange;
 use subxt::config::DefaultTransactionExtensions;
+use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
 use subxt::utils::H256;
 use subxt::{Config, Metadata, PolkadotConfig, SubstrateConfig};
 
@@ -62,17 +63,18 @@ pub async fn setup_client() -> Arc<SubstrateClient> {
     let option: Option<Vec<u8>> = Decode::decode(&mut &metadata_bytes[..]).unwrap();
     let metadata_bytes = option.ok_or("No metadata returned").unwrap();
 
-    let metadata = Metadata::decode_from(&metadata_bytes).unwrap();
-    // let pallet = metadata.pallet_by_call_index().unwrap();
-    // let extrinsic = pallet.call_index()
-    // println!("metadata: {metadata:?}");
+    let metadata = Arc::new(Metadata::decode_from(&metadata_bytes).unwrap());
+    {
+        let mut write = global::METADATA.write().await;
+        *write = Some(metadata.clone());
+    }
 
     let genesis_hash = H256::from(hex!(
         "91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3"
     ));
     let config = SubstrateConfig::builder()
         .set_spec_version_for_block_ranges(ranges)
-        .set_metadata_for_spec_versions([(spec_version, Arc::new(metadata))])
+        .set_metadata_for_spec_versions([(spec_version, metadata)])
         .set_genesis_hash(genesis_hash)
         .build();
     let config = EnjinConfig {

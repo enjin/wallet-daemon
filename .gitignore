@@ -9,3 +9,4 @@ AGENTS.md
 store
 docker-compose.*.yml
 /config.local.json
+.env
