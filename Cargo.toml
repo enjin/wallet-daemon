@@ -13,6 +13,7 @@ debug-assertions = true
 overflow-checks = true
 
 [dependencies]
+dotenvy = "0.15.7"
 tracing = "0.1.41"
 rpassword = "7.4.0"
 subxt = { version = "0.50.0", default-features = false, features = ["native"] }

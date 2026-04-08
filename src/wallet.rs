@@ -192,8 +192,6 @@ impl DeriveWalletProcessor {
         platform_token: String,
         requests: Vec<DeriveWalletRequest>,
     ) {
-        // DeriveWalletRequest { external_id }: DeriveWalletRequest,
-
         let wallets: Vec<_> = requests
             .into_iter()
             .map(|request| {

@@ -1,12 +1,12 @@
 use crate::SubstrateClient;
 use hex_literal::hex;
 use parity_scale_codec::Decode;
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 use std::sync::Arc;
 use subxt::config::substrate::SpecVersionForRange;
+use subxt::config::DefaultTransactionExtensions;
 use subxt::utils::H256;
 use subxt::{Config, Metadata, PolkadotConfig, SubstrateConfig};
-use subxt::config::DefaultTransactionExtensions;
 
 #[derive(Debug, Clone)]
 pub struct EnjinConfig {
@@ -49,7 +49,7 @@ impl Config for EnjinConfig {
     }
 }
 
-pub async fn setup_client(_url: &str) -> Arc<SubstrateClient> {
+pub async fn setup_client() -> Arc<SubstrateClient> {
     let spec_version = 1031;
     let ranges = vec![SpecVersionForRange {
         block_range: 0..u64::MAX,

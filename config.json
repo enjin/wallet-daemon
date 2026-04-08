@@ -1,5 +1,0 @@
-{
-  "node": "wss://rpc.matrix.blockchain.enjin.io",
-  "api": "https://platform.enjin.io/graphql/daemon",
-  "master_key": "store"
-}

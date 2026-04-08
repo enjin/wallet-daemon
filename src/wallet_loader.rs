@@ -1,50 +1,10 @@
-use config::Config;
-use serde::Deserialize;
 use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 use std::{env, fs};
 use subxt_signer::bip39::Mnemonic;
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::{ExposeSecret, SecretString, SecretUri};
-
-pub(crate) const CONFIG_FILE_ENV_NAME: &str = "CONFIG_FILE";
-pub(crate) const DEFAULT_CONFIG_FILE: &str = "config.json";
-pub(crate) const KEY_PASS: &str = "KEY_PASS";
-pub(crate) const PLATFORM_KEY: &str = "PLATFORM_KEY";
-
-#[derive(Deserialize, Clone, Debug, PartialEq)]
-pub struct Configuration {
-    node: String,
-    master_key: PathBuf,
-    api: String,
-}
-
-pub fn load_config() -> Configuration {
-    let config_file = env::var(CONFIG_FILE_ENV_NAME).unwrap_or_else(|_| {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(DEFAULT_CONFIG_FILE)
-            .to_str()
-            .unwrap()
-            .to_string()
-    });
-
-    Config::builder()
-        .add_source(config::File::from(Path::new(&config_file)))
-        .build()
-        .expect("Configuration file not found")
-        .try_deserialize::<Configuration>()
-        .expect("Configuration is incorrect")
-}
-
-fn get_password(env_name: &str) -> SecretString {
-    match env::var(env_name) {
-        Ok(p) => SecretString::from(p),
-        Err(_) => {
-            panic!("Password {} not loaded in memory", env_name)
-        }
-    }
-}
 
 async fn get_keys(key_store_path: &Path, password: SecretString) -> Keypair {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(key_store_path);
@@ -97,10 +57,10 @@ async fn get_keys(key_store_path: &Path, password: SecretString) -> Keypair {
     keypair_tx
 }
 
-pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, String) {
+pub async fn load_wallet(master_key: &Path, key_pass: &str) -> Keypair {
     let version = env!("CARGO_PKG_VERSION");
-    let password = get_password(KEY_PASS);
-    let signer = get_keys(&config.master_key, password).await;
+    let password = SecretString::from(key_pass);
+    let signer = get_keys(master_key, password).await;
     let public_key = signer.public_key().0;
     let account_id = sp_core::crypto::AccountId32::from(public_key);
 
@@ -117,16 +77,8 @@ pub async fn load_wallet(config: Configuration) -> (Keypair, String, String, Str
         "** Public Key          (Hex): 0x{}",
         hex::encode(public_key)
     );
-    println!("** Matrixchain RPC          : {}", config.node);
-    println!("** Platform URL             : {}", config.api);
-    println!("*****************************************************************");
 
-    (
-        signer,
-        config.node,
-        config.api,
-        format!("Bearer {}", env::var(PLATFORM_KEY).unwrap_or_default()),
-    )
+    signer
 }
 
 pub enum Chain {
