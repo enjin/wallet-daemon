@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
+use reqwest::header::HeaderMap;
 use subxt::OfflineClient;
 
 use crate::importer::write_seed;
@@ -52,17 +53,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let master_key = PathBuf::from_str(&master_key).expect("MASTER_KEY must be a valid path");
         load_wallet(&master_key, &key_pass).await
     };
-    let platform_key = dotenvy::var("PLATFORM_KEY").expect("PLATFORM_KEY env var is required");
-    let platform_token = format!("Bearer {}", platform_key);
+
     let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
     println!("** Platform URL: {}", platform_url);
     println!("*****************************************************************");
+
+    // set up headers
+    {
+        let platform_key = dotenvy::var("PLATFORM_KEY").expect("PLATFORM_KEY env var is required");
+        let platform_token = format!("Bearer {}", platform_key);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", platform_token.parse().expect("could not parse Authorization header"));
+        headers.insert("User-Agent", format!("Enjin-Wallet-Daemon/{}", env!("CARGO_PKG_VERSION")).parse().expect("could not parse User-Agent header"));
+        global::HEADERS.set(headers).expect("platform token already set");
+    }
 
     tracing_subscriber::fmt::init();
     set_multitenant(
         keypair.clone(),
         platform_url.clone(),
-        platform_token.clone(),
     )
     .await;
     let matrix_client = substrate_client::setup_client().await;
@@ -71,11 +81,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&matrix_client),
         keypair.clone(),
         platform_url.clone(),
-        platform_token.clone(),
     );
 
     let (wallet_poller, wallet_processor) =
-        DeriveWalletJob::create_job(keypair, platform_url, platform_token);
+        DeriveWalletJob::create_job(keypair, platform_url);
 
     tokio::select! {
         _ = matrix_tx_poller.start() => {}

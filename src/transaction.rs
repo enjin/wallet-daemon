@@ -80,7 +80,6 @@ pub struct TransactionJob {
     client: Client,
     sender: Sender<Vec<TransactionRequest>>,
     platform_url: String,
-    platform_token: String,
 }
 
 impl TransactionJob {
@@ -88,13 +87,11 @@ impl TransactionJob {
         client: Client,
         sender: Sender<Vec<TransactionRequest>>,
         platform_url: String,
-        platform_token: String,
     ) -> Self {
         Self {
             client,
             sender,
             platform_url,
-            platform_token,
         }
     }
 
@@ -102,7 +99,6 @@ impl TransactionJob {
         rpc: Arc<SubstrateClient>,
         keypair: Keypair,
         platform_url: String,
-        platform_token: String,
     ) -> (TransactionJob, TransactionProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
@@ -111,7 +107,6 @@ impl TransactionJob {
                 Client::new(),
                 sender,
                 platform_url.clone(),
-                platform_token.clone(),
             ),
             TransactionProcessor::new(
                 rpc,
@@ -119,7 +114,6 @@ impl TransactionJob {
                 keypair,
                 receiver,
                 platform_url,
-                platform_token,
             ),
         )
     }
@@ -172,7 +166,7 @@ impl TransactionJob {
         let res = self
             .client
             .post(&self.platform_url)
-            .header("Authorization", &self.platform_token)
+            .headers(global::headers())
             .json(&res)
             .send()
             .await?;
@@ -214,7 +208,6 @@ pub struct TransactionProcessor {
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
     platform_url: String,
-    platform_token: String,
 }
 
 impl TransactionProcessor {
@@ -224,7 +217,6 @@ impl TransactionProcessor {
         keypair: Keypair,
         receiver: Receiver<Vec<TransactionRequest>>,
         platform_url: String,
-        platform_token: String,
     ) -> Self {
         Self {
             chain_client: rpc,
@@ -232,7 +224,6 @@ impl TransactionProcessor {
             keypair,
             receiver,
             platform_url,
-            platform_token,
         }
     }
 
@@ -242,7 +233,6 @@ impl TransactionProcessor {
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         platform_url: String,
-        platform_token: String,
         requests: Vec<TransactionRequest>,
     ) {
         let mut inputs = Vec::with_capacity(requests.len());
@@ -441,7 +431,6 @@ impl TransactionProcessor {
         platform_client::sign_transactions(
             platform_client.clone(),
             platform_url.clone(),
-            platform_token.clone(),
             inputs,
         )
         .await;
@@ -458,7 +447,6 @@ impl TransactionProcessor {
                 self.keypair.clone(),
                 Arc::clone(&nonce_tracker),
                 self.platform_url.clone(),
-                self.platform_token.clone(),
                 requests,
             ));
         }

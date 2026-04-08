@@ -5,7 +5,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use subxt::config::substrate::SpecVersionForRange;
 use subxt::config::DefaultTransactionExtensions;
-use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
 use subxt::utils::H256;
 use subxt::{Config, Metadata, PolkadotConfig, SubstrateConfig};
 

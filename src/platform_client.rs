@@ -7,6 +7,7 @@ use backon::{ExponentialBuilder, Retryable};
 use graphql_client::GraphQLQuery;
 use reqwest::Client;
 use std::time::Duration;
+use crate::global;
 
 pub struct PlatformExponentialBuilder();
 impl PlatformExponentialBuilder {
@@ -23,7 +24,6 @@ impl PlatformExponentialBuilder {
 pub async fn sign_transactions(
     client: Client,
     platform_url: String,
-    platform_token: String,
     transactions: Vec<SignTransactionInput>,
 ) {
     let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
@@ -33,7 +33,7 @@ pub async fn sign_transactions(
     let res = (|| async {
         client
             .post(&platform_url)
-            .header("Authorization", &platform_token)
+            .headers(global::headers())
             .json(&request_body)
             .send()
             .await
@@ -63,7 +63,6 @@ pub async fn sign_transactions(
 pub async fn populate_managed_wallets(
     client: Client,
     platform_url: String,
-    platform_token: String,
     wallets: Vec<PopulateManagedWalletInput>,
 ) {
     let external_ids_and_accounts: Vec<(String, String)> = wallets
@@ -77,7 +76,7 @@ pub async fn populate_managed_wallets(
     let res = (|| async {
         client
             .post(&platform_url)
-            .header("Authorization", &platform_token)
+            .headers(global::headers())
             .json(&request_body)
             .send()
             .await

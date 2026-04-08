@@ -1,6 +1,6 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{get_pending_managed_wallet_creations, GetPendingManagedWalletCreations};
-use crate::platform_client;
+use crate::{global, platform_client};
 use graphql_client::GraphQLQuery;
 use reqwest::{Client, Response};
 use std::time::Duration;
@@ -37,7 +37,6 @@ pub struct DeriveWalletJob {
     client: Client,
     sender: Sender<Vec<DeriveWalletRequest>>,
     platform_url: String,
-    platform_token: String,
 }
 
 impl DeriveWalletJob {
@@ -45,20 +44,17 @@ impl DeriveWalletJob {
         client: Client,
         sender: Sender<Vec<DeriveWalletRequest>>,
         platform_url: String,
-        platform_token: String,
     ) -> Self {
         Self {
             client,
             sender,
             platform_url,
-            platform_token,
         }
     }
 
     pub fn create_job(
         keypair: Keypair,
         platform_url: String,
-        platform_token: String,
     ) -> (DeriveWalletJob, DeriveWalletProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
@@ -67,14 +63,12 @@ impl DeriveWalletJob {
                 Client::new(),
                 sender,
                 platform_url.clone(),
-                platform_token.clone(),
             ),
             DeriveWalletProcessor::new(
                 Client::new(),
                 keypair,
                 receiver,
                 platform_url,
-                platform_token,
             ),
         )
     }
@@ -125,7 +119,7 @@ impl DeriveWalletJob {
         let res = self
             .client
             .post(&self.platform_url)
-            .header("Authorization", &self.platform_token)
+            .headers(global::headers())
             .json(&res)
             .send()
             .await?;
@@ -165,7 +159,6 @@ pub struct DeriveWalletProcessor {
     keypair: Keypair,
     receiver: Receiver<Vec<DeriveWalletRequest>>,
     platform_url: String,
-    platform_token: String,
 }
 
 impl DeriveWalletProcessor {
@@ -174,14 +167,12 @@ impl DeriveWalletProcessor {
         keypair: Keypair,
         receiver: Receiver<Vec<DeriveWalletRequest>>,
         platform_url: String,
-        platform_token: String,
     ) -> Self {
         Self {
             client,
             keypair,
             receiver,
             platform_url,
-            platform_token,
         }
     }
 
@@ -189,7 +180,6 @@ impl DeriveWalletProcessor {
         client: Client,
         keypair: Keypair,
         platform_url: String,
-        platform_token: String,
         requests: Vec<DeriveWalletRequest>,
     ) {
         let wallets: Vec<_> = requests
@@ -220,7 +210,6 @@ impl DeriveWalletProcessor {
             platform_client::populate_managed_wallets(
                 client,
                 platform_url,
-                platform_token,
                 wallets,
             )
             .await;
@@ -233,7 +222,6 @@ impl DeriveWalletProcessor {
                 self.client.clone(),
                 self.keypair.clone(),
                 self.platform_url.clone(),
-                self.platform_token.clone(),
                 requests,
             ));
         }
