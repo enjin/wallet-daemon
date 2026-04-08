@@ -1,15 +1,33 @@
-#![allow(missing_docs, long_running_const_eval)]
+#![allow(missing_docs, long_running_const_eval, clippy::too_many_arguments)]
 
-use hex_literal::hex;
-use parity_scale_codec::Decode;
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
-use subxt::config::polkadot::SpecVersionForRange;
-use subxt::{config::PolkadotConfig, Config, Metadata, OfflineClient, SubstrateConfig};
-use subxt::utils::H256;
-use wallet_daemon::config_loader::{load_config, load_wallet};
-use wallet_daemon::{set_multitenant, write_seed, DeriveWalletJob, SubstrateClient, TransactionJob};
+use subxt::OfflineClient;
+
+use crate::config_loader::{load_config, load_wallet};
+use crate::importer::write_seed;
+use crate::multitenant::set_multitenant;
+use crate::substrate_client::EnjinConfig;
+use crate::transaction::TransactionJob;
+use crate::wallet::DeriveWalletJob;
+
+pub type SubstrateClient = OfflineClient<EnjinConfig>;
+
+pub const CHAIN: config_loader::Chain = config_loader::Chain::Matrix;
+pub const NETWORK: config_loader::ConfigNetwork = config_loader::ConfigNetwork::Enjin;
+pub const TX_MORTALITY: u64 = 64;
+pub const DUMMY_TX_MORTALITY: u64 = 14_400;
+
+mod config_loader;
+mod graphql;
+mod importer;
+mod multitenant;
+mod subscription;
+pub mod substrate_client;
+mod platform_client;
+mod transaction;
+mod wallet;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,16 +45,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (keypair, matrix_url, platform_url, platform_token) = load_wallet(load_config()).await;
 
     tracing_subscriber::fmt::init();
-    // Check if we are connecting to a multitenant platform
     set_multitenant(
         keypair.clone(),
         platform_url.clone(),
         platform_token.clone(),
     )
     .await;
-    // Setup matrix client and parameters
-    // TODO: metadata will need to be updated when it changes
-    let matrix_client = wallet_daemon::substrate_client::setup_client(&matrix_url).await;
+    let matrix_client = substrate_client::setup_client(&matrix_url).await;
 
     let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(
         Arc::clone(&matrix_client),

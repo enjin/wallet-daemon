@@ -3,6 +3,10 @@ name = "wallet-daemon"
 version = "3.0.0"
 edition = "2021"
 
+[[bin]]
+name = "wallet-daemon"
+path = "src/main.rs"
+
 [profile.release]
 debug = true
 debug-assertions = true
