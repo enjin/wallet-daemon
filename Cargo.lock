@@ -4936,6 +4936,7 @@ dependencies = [
  "parity-scale-codec",
  "reqwest",
  "rpassword",
+ "scale-info-legacy",
  "serde",
  "sp-core",
  "subxt",

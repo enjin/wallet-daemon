@@ -4,7 +4,7 @@ use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{get_pending_transactions, GetPendingTransactions};
 use crate::subscription::Network;
 use crate::transaction::fuel_tank::ExpirableSignature;
-use crate::{platform_client, DUMMY_TX_MORTALITY, TX_MORTALITY};
+use crate::{platform_client, SubstrateClient, DUMMY_TX_MORTALITY, TX_MORTALITY};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
@@ -95,7 +95,7 @@ impl TransactionJob {
     }
 
     pub fn create_job(
-        rpc: Arc<OfflineClient<PolkadotConfig>>,
+        rpc: Arc<SubstrateClient>,
         keypair: Keypair,
         platform_url: String,
         platform_token: String,
@@ -205,7 +205,7 @@ impl TransactionJob {
 }
 
 pub struct TransactionProcessor {
-    chain_client: Arc<OfflineClient<PolkadotConfig>>,
+    chain_client: Arc<SubstrateClient>,
     platform_client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
@@ -215,7 +215,7 @@ pub struct TransactionProcessor {
 
 impl TransactionProcessor {
     pub(crate) fn new(
-        rpc: Arc<OfflineClient<PolkadotConfig>>,
+        rpc: Arc<SubstrateClient>,
         client: Client,
         keypair: Keypair,
         receiver: Receiver<Vec<TransactionRequest>>,
@@ -233,7 +233,7 @@ impl TransactionProcessor {
     }
 
     async fn transaction_handler(
-        chain_client: Arc<OfflineClient<PolkadotConfig>>,
+        chain_client: Arc<SubstrateClient>,
         platform_client: Client,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
@@ -341,6 +341,7 @@ impl TransactionProcessor {
                 tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
             }
 
+            let block_temp = 1000_u64;
             let dummy_tx = {
                 // this is system.remark with empty value: 0x000000
                 let payload = vec![0, 0, 0];
@@ -348,7 +349,7 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal(DUMMY_TX_MORTALITY)
                     .build();
-                let client_at_block = chain_client.at_block(0_u64).unwrap();
+                let client_at_block = chain_client.at_block(block_temp).unwrap();
                 let signed_dummy_tx = match client_at_block
                     .tx()
                     .create_signable_offline(&PayloadWrapper(payload), params)
@@ -372,7 +373,7 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal(TX_MORTALITY)
                     .build();
-                let client_at_block = chain_client.at_block(0_u64).unwrap();
+                let client_at_block = chain_client.at_block(block_temp).unwrap();
                 match client_at_block
                     .tx()
                     .create_signable_offline(&PayloadWrapper(payload.clone()), params)

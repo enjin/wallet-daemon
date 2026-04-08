@@ -33,3 +33,4 @@ sp-core = { version = "38.0.0", default-features = false, features = [
 bip39 = { version = "2.2.0", features = ["rand"] }
 lru = "0.16.0"
 hex-literal = "1.1.0"
+scale-info-legacy = "0.4.2"
