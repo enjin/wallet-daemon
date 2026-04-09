@@ -1,11 +1,11 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
-use crate::graphql::{get_pending_managed_wallet_creations, GetPendingManagedWalletCreations};
+use crate::graphql::{GetPendingManagedWalletCreations, get_pending_managed_wallet_creations};
 use crate::{global, platform_client};
 use graphql_client::GraphQLQuery;
 use reqwest::{Client, Response};
 use std::time::Duration;
-use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
+use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -59,17 +59,8 @@ impl DeriveWalletJob {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
         (
-            DeriveWalletJob::new(
-                Client::new(),
-                sender,
-                platform_url.clone(),
-            ),
-            DeriveWalletProcessor::new(
-                Client::new(),
-                keypair,
-                receiver,
-                platform_url,
-            ),
+            DeriveWalletJob::new(Client::new(), sender, platform_url.clone()),
+            DeriveWalletProcessor::new(Client::new(), keypair, receiver, platform_url),
         )
     }
 
@@ -207,12 +198,7 @@ impl DeriveWalletProcessor {
             .collect();
 
         if !wallets.is_empty() {
-            platform_client::populate_managed_wallets(
-                client,
-                platform_url,
-                wallets,
-            )
-            .await;
+            platform_client::populate_managed_wallets(client, platform_url, wallets).await;
         }
     }
 

@@ -1,10 +1,10 @@
 mod fuel_tank;
 
 use crate::graphql::sign_transactions::SignTransactionInput;
-use crate::graphql::{get_pending_transactions, GetPendingTransactions};
+use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::subscription::Network;
 use crate::transaction::fuel_tank::ExpirableSignature;
-use crate::{global, platform_client, SubstrateClient, DUMMY_TX_MORTALITY, TX_MORTALITY};
+use crate::{DUMMY_TX_MORTALITY, SubstrateClient, TX_MORTALITY, global, platform_client};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
 use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
-use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
+use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -79,42 +79,22 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
 pub struct TransactionJob {
     client: Client,
     sender: Sender<Vec<TransactionRequest>>,
-    platform_url: String,
 }
 
 impl TransactionJob {
-    pub fn new(
-        client: Client,
-        sender: Sender<Vec<TransactionRequest>>,
-        platform_url: String,
-    ) -> Self {
-        Self {
-            client,
-            sender,
-            platform_url,
-        }
+    pub fn new(client: Client, sender: Sender<Vec<TransactionRequest>>) -> Self {
+        Self { client, sender }
     }
 
     pub fn create_job(
         rpc: Arc<SubstrateClient>,
         keypair: Keypair,
-        platform_url: String,
     ) -> (TransactionJob, TransactionProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
         (
-            TransactionJob::new(
-                Client::new(),
-                sender,
-                platform_url.clone(),
-            ),
-            TransactionProcessor::new(
-                rpc,
-                Client::new(),
-                keypair,
-                receiver,
-                platform_url,
-            ),
+            TransactionJob::new(Client::new(), sender),
+            TransactionProcessor::new(rpc, Client::new(), keypair, receiver),
         )
     }
 
@@ -165,7 +145,7 @@ impl TransactionJob {
 
         let res = self
             .client
-            .post(&self.platform_url)
+            .post(global::platform_url())
             .headers(global::headers())
             .json(&res)
             .send()
@@ -207,7 +187,6 @@ pub struct TransactionProcessor {
     platform_client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
-    platform_url: String,
 }
 
 impl TransactionProcessor {
@@ -216,14 +195,12 @@ impl TransactionProcessor {
         client: Client,
         keypair: Keypair,
         receiver: Receiver<Vec<TransactionRequest>>,
-        platform_url: String,
     ) -> Self {
         Self {
             chain_client: rpc,
             platform_client: client,
             keypair,
             receiver,
-            platform_url,
         }
     }
 
@@ -232,7 +209,6 @@ impl TransactionProcessor {
         platform_client: Client,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
-        platform_url: String,
         requests: Vec<TransactionRequest>,
     ) {
         let mut inputs = Vec::with_capacity(requests.len());
@@ -275,7 +251,10 @@ impl TransactionProcessor {
                 let latest_nonce = tracker.get(&public_key).unwrap_or(&0u64);
                 correct_nonce = *latest_nonce.max(&chain_nonce);
                 let acc_format = trim_account(public_key.clone());
-                tracing::warn!("Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
+                tracing::warn!(
+                    "Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}",
+                    correct_nonce + 1
+                );
                 tracker.put(public_key.clone(), correct_nonce + 1);
             }
 
@@ -380,7 +359,9 @@ impl TransactionProcessor {
                 let Ok(extrinsic_info) =
                     metadata.extrinsic_call_info_by_index(pallet_index, call_index)
                 else {
-                    tracing::error!("extinsic at pallet index: {pallet_index}, call_index: {call_index}, not found");
+                    tracing::error!(
+                        "extinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
+                    );
                     continue;
                 };
                 let payload = PayloadWrapper {
@@ -428,12 +409,7 @@ impl TransactionProcessor {
                 signed_abandon_extrinsic: dummy_tx.clone(),
             });
         }
-        platform_client::sign_transactions(
-            platform_client.clone(),
-            platform_url.clone(),
-            inputs,
-        )
-        .await;
+        platform_client::sign_transactions(platform_client.clone(), inputs).await;
     }
 
     async fn launch_job_scheduler(mut self) {
@@ -446,7 +422,6 @@ impl TransactionProcessor {
                 self.platform_client.clone(),
                 self.keypair.clone(),
                 Arc::clone(&nonce_tracker),
-                self.platform_url.clone(),
                 requests,
             ));
         }

@@ -1,13 +1,13 @@
+use crate::global;
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{
-    populate_managed_wallets, sign_transactions, PopulateManagedWallets, SignTransactions,
+    PopulateManagedWallets, SignTransactions, populate_managed_wallets, sign_transactions,
 };
 use backon::{ExponentialBuilder, Retryable};
 use graphql_client::GraphQLQuery;
 use reqwest::Client;
 use std::time::Duration;
-use crate::global;
 
 pub struct PlatformExponentialBuilder();
 impl PlatformExponentialBuilder {
@@ -21,18 +21,14 @@ impl PlatformExponentialBuilder {
     }
 }
 
-pub async fn sign_transactions(
-    client: Client,
-    platform_url: String,
-    transactions: Vec<SignTransactionInput>,
-) {
+pub async fn sign_transactions(client: Client, transactions: Vec<SignTransactionInput>) {
     let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
     let request_body = SignTransactions::build_query(sign_transactions::Variables { transactions });
 
     let res = (|| async {
         client
-            .post(&platform_url)
+            .post(global::platform_url())
             .headers(global::headers())
             .json(&request_body)
             .send()

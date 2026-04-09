@@ -1,11 +1,11 @@
 #![allow(missing_docs, long_running_const_eval, clippy::too_many_arguments)]
 
+use reqwest::header::HeaderMap;
 use std::env;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
-use reqwest::header::HeaderMap;
 use subxt::OfflineClient;
 
 use crate::importer::write_seed;
@@ -37,24 +37,27 @@ mod wallet_loader;
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
-    if let Some(arg) = args.first() {
-        if arg == "import" {
-            println!("Enjin Platform - Import Wallet");
-            let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
-            write_seed(seed).expect("Failed to import your wallet");
+    if let Some(arg) = args.first()
+        && arg == "import"
+    {
+        println!("Enjin Platform - Import Wallet");
+        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
+        write_seed(seed).expect("Failed to import your wallet");
 
-            exit(1);
-        }
+        exit(1);
     }
 
     let keypair = {
         let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
-        let master_key = dotenvy::var("MASTER_KEY").unwrap_or("store".to_string());
-        let master_key = PathBuf::from_str(&master_key).expect("MASTER_KEY must be a valid path");
-        load_wallet(&master_key, &key_pass).await
+        let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
+        let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
+        load_wallet(&seed_path, &key_pass).await
     };
 
     let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
+    global::PLATFORM_URL
+        .set(platform_url.clone())
+        .expect("platform url already set");
     println!("** Platform URL: {}", platform_url);
     println!("*****************************************************************");
 
@@ -64,27 +67,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let platform_token = format!("Bearer {}", platform_key);
 
         let mut headers = HeaderMap::new();
-        headers.insert("Authorization", platform_token.parse().expect("could not parse Authorization header"));
-        headers.insert("User-Agent", format!("Enjin-Wallet-Daemon/{}", env!("CARGO_PKG_VERSION")).parse().expect("could not parse User-Agent header"));
-        global::HEADERS.set(headers).expect("platform token already set");
+        headers.insert(
+            "Authorization",
+            platform_token
+                .parse()
+                .expect("could not parse Authorization header"),
+        );
+        headers.insert(
+            "User-Agent",
+            format!("Enjin-Wallet-Daemon/{}", env!("CARGO_PKG_VERSION"))
+                .parse()
+                .expect("could not parse User-Agent header"),
+        );
+        global::HEADERS
+            .set(headers)
+            .expect("platform token already set");
     }
 
     tracing_subscriber::fmt::init();
-    set_multitenant(
-        keypair.clone(),
-        platform_url.clone(),
-    )
-    .await;
+    set_multitenant(keypair.clone(), platform_url.clone()).await;
     let matrix_client = substrate_client::setup_client().await;
 
-    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(
-        Arc::clone(&matrix_client),
-        keypair.clone(),
-        platform_url.clone(),
-    );
+    let (matrix_tx_poller, matrix_tx_processor) =
+        TransactionJob::create_job(Arc::clone(&matrix_client), keypair.clone());
 
-    let (wallet_poller, wallet_processor) =
-        DeriveWalletJob::create_job(keypair, platform_url);
+    let (wallet_poller, wallet_processor) = DeriveWalletJob::create_job(keypair, platform_url);
 
     tokio::select! {
         _ = matrix_tx_poller.start() => {}

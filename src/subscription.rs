@@ -9,16 +9,6 @@ pub enum Network {
     CanaryMatrix,
 }
 
-impl Network {
-    pub fn to_query_var(&self) -> Option<String> {
-        match self {
-            Network::EnjinRelay => Some("relay".to_string()),
-            Network::CanaryRelay => Some("relay".to_string()),
-            _ => Some("matrix".to_string()),
-        }
-    }
-}
-
 impl fmt::Display for Network {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
