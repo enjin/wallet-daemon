@@ -5,14 +5,13 @@ use std::str::FromStr;
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::{ExposeSecret, SecretUri};
 
-pub fn write_seed(seed: String) -> std::io::Result<()> {
-    // TODO: Get the path for the store from config_loader
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("store");
+pub fn write_seed(seed: String, path: &Path) -> std::io::Result<()> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
     let uri = SecretUri::from_str(&seed).expect("valid URI");
     let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
 
     fs::write(
-        p.join(format!(
+        path.join(format!(
             "73723235{}",
             hex::encode(keypair_tx.public_key().0)
         )),

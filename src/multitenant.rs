@@ -14,6 +14,7 @@ async fn set_daemon_wallet_account(
             signed_message: format!("0x{}", hex::encode(signature.0)),
         },
     );
+    // println!("request_body: {:?}", serde_json::to_string(&request_body));
 
     let client = reqwest::Client::new();
     let res = client

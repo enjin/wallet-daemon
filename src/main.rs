@@ -1,6 +1,6 @@
 #![allow(missing_docs, long_running_const_eval, clippy::too_many_arguments)]
 
-use reqwest::header::HeaderMap;
+use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
 use std::env;
 use std::path::PathBuf;
 use std::process::exit;
@@ -36,21 +36,22 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
+    let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
+
     let args: Vec<String> = env::args().skip(1).collect();
     if let Some(arg) = args.first()
         && arg == "import"
     {
         println!("Enjin Platform - Import Wallet");
         let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
-        write_seed(seed).expect("Failed to import your wallet");
+        write_seed(seed, &seed_path).expect("Failed to import your wallet");
 
         exit(1);
     }
 
     let keypair = {
         let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
-        let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
-        let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
         load_wallet(&seed_path, &key_pass).await
     };
 
@@ -68,13 +69,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut headers = HeaderMap::new();
         headers.insert(
-            "Authorization",
+            AUTHORIZATION,
             platform_token
                 .parse()
                 .expect("could not parse Authorization header"),
         );
         headers.insert(
-            "User-Agent",
+            USER_AGENT,
             format!("Enjin-Wallet-Daemon/{}", env!("CARGO_PKG_VERSION"))
                 .parse()
                 .expect("could not parse User-Agent header"),
