@@ -53,8 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         && arg == "import"
     {
         println!("Enjin Platform - Import Wallet");
-        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").expect("enter mnemonic failed");
-        write_seed(seed, &seed_path).expect("Failed to import your wallet");
+        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
+        let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
+        write_seed(seed, &seed_path, &key_pass).expect("Failed to import your wallet");
 
         exit(1);
     }

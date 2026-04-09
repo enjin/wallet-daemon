@@ -6,20 +6,7 @@ use std::str::FromStr;
 use subxt_signer::sr25519::Keypair;
 use subxt_signer::{ExposeSecret, SecretUri};
 
-pub fn write_seed(seed: String, seed_path: &Path) -> std::io::Result<()> {
-    let password =
-        rpassword::prompt_password("Enter encryption password: ").expect("Failed to read password");
-    let confirm = rpassword::prompt_password("Confirm encryption password: ")
-        .expect("Failed to read password");
-
-    if password != confirm {
-        panic!("Passwords do not match");
-    }
-
-    // if password.len() < 8 {
-    //     panic!("Password must be at least 8 characters");
-    // }
-
+pub fn write_seed(seed: String, seed_path: &Path, key_pass: &str) -> std::io::Result<()> {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = if seed_path.is_absolute() {
         seed_path.to_path_buf()
@@ -30,7 +17,7 @@ pub fn write_seed(seed: String, seed_path: &Path) -> std::io::Result<()> {
     let uri = SecretUri::from_str(&seed).expect("valid URI");
     let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
 
-    let encrypted_mnemonic = crypto::encrypt(uri.phrase.expose_secret(), &password);
+    let encrypted_mnemonic = crypto::encrypt(uri.phrase.expose_secret(), key_pass);
 
     let final_path = if path.is_dir() {
         path.join(format!(
