@@ -36,3 +36,7 @@ bip39 = { version = "2.2.0", features = ["rand"] }
 lru = "0.16.0"
 hex-literal = "1.1.0"
 scale-info-legacy = "0.4.2"
+aes-gcm = "0.10.3"
+argon2 = "0.5"
+rand = "0.8.5"
+serde_json = "1.0.132"

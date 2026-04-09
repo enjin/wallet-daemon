@@ -23,6 +23,7 @@ pub const DEFAULT_PLATFORM_URL: &str = "https://platform.enjin.io/graphql/daemon
 pub const TX_MORTALITY: u64 = 64;
 pub const DUMMY_TX_MORTALITY: u64 = 14_400;
 
+mod crypto;
 mod global;
 mod graphql;
 mod importer;
@@ -38,13 +39,21 @@ mod wallet_loader;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
     let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
+    if !seed_path.exists() {
+        panic!("SEED_PATH does not exist: {:?}", seed_path)
+    };
+    let seed_path = if seed_path.is_dir() {
+        seed_path.join("wallet.seed")
+    } else {
+        seed_path
+    };
 
     let args: Vec<String> = env::args().skip(1).collect();
     if let Some(arg) = args.first()
         && arg == "import"
     {
         println!("Enjin Platform - Import Wallet");
-        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
+        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").expect("enter mnemonic failed");
         write_seed(seed, &seed_path).expect("Failed to import your wallet");
 
         exit(1);
@@ -52,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let keypair = {
         let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
-        load_wallet(&seed_path, &key_pass).await
+        load_wallet(&seed_path, &key_pass)
     };
 
     let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
