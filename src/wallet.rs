@@ -36,31 +36,19 @@ impl TryFrom<get_pending_managed_wallet_creations::GetPendingManagedWalletCreati
 pub struct DeriveWalletJob {
     client: Client,
     sender: Sender<Vec<DeriveWalletRequest>>,
-    platform_url: String,
 }
 
 impl DeriveWalletJob {
-    pub fn new(
-        client: Client,
-        sender: Sender<Vec<DeriveWalletRequest>>,
-        platform_url: String,
-    ) -> Self {
-        Self {
-            client,
-            sender,
-            platform_url,
-        }
+    pub fn new(client: Client, sender: Sender<Vec<DeriveWalletRequest>>) -> Self {
+        Self { client, sender }
     }
 
-    pub fn create_job(
-        keypair: Keypair,
-        platform_url: String,
-    ) -> (DeriveWalletJob, DeriveWalletProcessor) {
+    pub fn create_job(keypair: Keypair) -> (DeriveWalletJob, DeriveWalletProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
         (
-            DeriveWalletJob::new(Client::new(), sender, platform_url.clone()),
-            DeriveWalletProcessor::new(Client::new(), keypair, receiver, platform_url),
+            DeriveWalletJob::new(Client::new(), sender),
+            DeriveWalletProcessor::new(Client::new(), keypair, receiver),
         )
     }
 
@@ -109,7 +97,7 @@ impl DeriveWalletJob {
 
         let res = self
             .client
-            .post(&self.platform_url)
+            .post(global::platform_url())
             .headers(global::headers())
             .json(&res)
             .send()
@@ -149,7 +137,6 @@ pub struct DeriveWalletProcessor {
     client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<DeriveWalletRequest>>,
-    platform_url: String,
 }
 
 impl DeriveWalletProcessor {
@@ -157,22 +144,15 @@ impl DeriveWalletProcessor {
         client: Client,
         keypair: Keypair,
         receiver: Receiver<Vec<DeriveWalletRequest>>,
-        platform_url: String,
     ) -> Self {
         Self {
             client,
             keypair,
             receiver,
-            platform_url,
         }
     }
 
-    async fn derive_wallets(
-        client: Client,
-        keypair: Keypair,
-        platform_url: String,
-        requests: Vec<DeriveWalletRequest>,
-    ) {
+    async fn derive_wallets(client: Client, keypair: Keypair, requests: Vec<DeriveWalletRequest>) {
         let wallets: Vec<_> = requests
             .into_iter()
             .map(|request| {
@@ -198,7 +178,7 @@ impl DeriveWalletProcessor {
             .collect();
 
         if !wallets.is_empty() {
-            platform_client::populate_managed_wallets(client, platform_url, wallets).await;
+            platform_client::populate_managed_wallets(client, wallets).await;
         }
     }
 
@@ -207,7 +187,6 @@ impl DeriveWalletProcessor {
             tokio::spawn(Self::derive_wallets(
                 self.client.clone(),
                 self.keypair.clone(),
-                self.platform_url.clone(),
                 requests,
             ));
         }

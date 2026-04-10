@@ -4,7 +4,9 @@ use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::types::{Chain, Network};
-use crate::{DUMMY_TX_MORTALITY, SubstrateClient, TX_MORTALITY, global, platform_client};
+use crate::{
+    DUMMY_TX_MORTALITY, SubstrateClient, TX_MORTALITY, chain_info, global, platform_client,
+};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
@@ -49,6 +51,8 @@ impl subxt::tx::Payload for PayloadWrapper<'_> {
 pub struct TransactionRequest {
     request_id: String,
     external_id: Option<String>,
+    network: Network,
+    chain: Chain,
     payload: Vec<u8>,
     /// If this is Some, the extrinsic is a dispatch from fuel tanks and needs the signature added
     pub fuel_tank_signer_external_id: Option<Option<String>>,
@@ -66,6 +70,8 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
         Ok(Self {
             external_id,
             request_id: data.uuid,
+            network: data.network.try_into()?,
+            chain: data.chain.try_into()?,
             payload: hex::decode(data.encoded_data.split('x').nth(1).unwrap())?,
             fuel_tank_signer_external_id: data
                 .should_sign_fuel_tank
@@ -208,10 +214,21 @@ impl TransactionProcessor {
             let TransactionRequest {
                 request_id,
                 external_id,
+                network,
+                chain,
                 mut payload,
                 fuel_tank_signer_external_id,
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
+
+            if let Some(_stored_spec_version) = global::metadata_spec_version(network, chain).await
+            {
+                // TODO: check the spec version here
+            } else {
+                if let Err(e) = chain_info::update_metadata(network, chain).await {
+                    tracing::error!("failed to update metadata for {network:?} {chain:?}: {e:?}");
+                }
+            }
 
             let signer = if let Some(external_id) = external_id {
                 let derive_junction = match external_id.parse::<i64>() {

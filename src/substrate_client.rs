@@ -1,4 +1,4 @@
-use crate::global::MetadataInfo;
+use crate::MetadataInfo;
 use crate::types::{Chain, Network};
 use crate::{SubstrateClient, global};
 use hex_literal::hex;

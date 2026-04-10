@@ -56,11 +56,7 @@ pub async fn sign_transactions(client: Client, transactions: Vec<SignTransaction
     }
 }
 
-pub async fn populate_managed_wallets(
-    client: Client,
-    platform_url: String,
-    wallets: Vec<PopulateManagedWalletInput>,
-) {
+pub async fn populate_managed_wallets(client: Client, wallets: Vec<PopulateManagedWalletInput>) {
     let external_ids_and_accounts: Vec<(String, String)> = wallets
         .iter()
         .map(|x| (x.external_id.clone(), x.public_key.clone()))
@@ -71,7 +67,7 @@ pub async fn populate_managed_wallets(
 
     let res = (|| async {
         client
-            .post(&platform_url)
+            .post(global::platform_url())
             .headers(global::headers())
             .json(&request_body)
             .send()

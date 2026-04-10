@@ -22,6 +22,7 @@ pub const DEFAULT_PLATFORM_URL: &str = "https://platform.enjin.io/graphql/daemon
 pub const TX_MORTALITY: u64 = 64;
 pub const DUMMY_TX_MORTALITY: u64 = 14_400;
 
+mod chain_info;
 mod crypto;
 mod global;
 mod graphql;
@@ -101,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (matrix_tx_poller, matrix_tx_processor) =
         TransactionJob::create_job(Arc::clone(&matrix_client), keypair.clone());
 
-    let (wallet_poller, wallet_processor) = DeriveWalletJob::create_job(keypair, platform_url);
+    let (wallet_poller, wallet_processor) = DeriveWalletJob::create_job(keypair);
 
     tokio::select! {
         _ = matrix_tx_poller.start() => {}
