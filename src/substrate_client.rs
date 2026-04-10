@@ -1,3 +1,5 @@
+use crate::global::MetadataInfo;
+use crate::types::{Chain, Network};
 use crate::{SubstrateClient, global};
 use hex_literal::hex;
 use parity_scale_codec::Decode;
@@ -65,10 +67,15 @@ pub async fn setup_client() -> Arc<SubstrateClient> {
     let metadata_bytes = option.ok_or("No metadata returned").unwrap();
 
     let metadata = Arc::new(Metadata::decode_from(&metadata_bytes).unwrap());
-    {
-        let mut write = global::METADATA.write().await;
-        *write = Some(metadata.clone());
-    }
+    global::insert_metadata(
+        Network::Canary,
+        Chain::Matrix,
+        MetadataInfo {
+            spec_version,
+            metadata: metadata.clone(),
+        },
+    )
+    .await;
 
     let genesis_hash = H256::from(hex!(
         "91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3"

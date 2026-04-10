@@ -99,9 +99,9 @@ impl DeriveWalletJob {
     ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
         let res = GetPendingManagedWalletCreations::build_query(
             get_pending_managed_wallet_creations::Variables {
-                // TODO: get these from the config
-                network: crate::NETWORK.into(),
-                chain: crate::CHAIN.into(),
+                // TODO: use correct chains
+                network: crate::Network::Canary.into(),
+                chain: crate::Chain::Matrix.into(),
                 limit: ACCOUNT_PAGE_SIZE,
                 cursor: None,
             },

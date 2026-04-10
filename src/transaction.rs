@@ -2,8 +2,8 @@ mod fuel_tank;
 
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{GetPendingTransactions, get_pending_transactions};
-use crate::subscription::Network;
 use crate::transaction::fuel_tank::ExpirableSignature;
+use crate::types::{Chain, Network};
 use crate::{DUMMY_TX_MORTALITY, SubstrateClient, TX_MORTALITY, global, platform_client};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
@@ -13,7 +13,6 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
-use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -119,11 +118,7 @@ impl TransactionJob {
                 }
                 Err(e) => {
                     if e.to_string() == NO_TRANSACTIONS_MSG {
-                        tracing::info!(
-                            "GetPendingTransactions: {} for {}",
-                            NO_TRANSACTIONS_MSG,
-                            Network::EnjinMatrix // TODO: update
-                        );
+                        tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
                     } else {
                         tracing::error!("Error: {:?}", e);
                     }
@@ -345,16 +340,20 @@ impl TransactionProcessor {
             };
             let signed_tx = {
                 // contruct payload
-                let guard = global::METADATA.read().await;
-                let metadata = guard.as_ref().expect("metadata not set");
                 if payload.len() < 2 {
                     tracing::error!("payload does not store pallet index and call index");
                     continue;
                 }
                 let pallet_index = payload[0];
                 let call_index = payload[1];
-                let Ok(extrinsic_info) =
-                    metadata.extrinsic_call_info_by_index(pallet_index, call_index)
+                // TODO: use proper chains here
+                let Some((pallet_name, call_name)) = global::metadata_names(
+                    Network::Canary,
+                    Chain::Matrix,
+                    pallet_index,
+                    call_index,
+                )
+                .await
                 else {
                     tracing::error!(
                         "extinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
@@ -362,8 +361,8 @@ impl TransactionProcessor {
                     continue;
                 };
                 let payload = PayloadWrapper {
-                    pallet_name: &extrinsic_info.pallet_name,
-                    call_name: &extrinsic_info.call_name,
+                    pallet_name: &pallet_name,
+                    call_name: &call_name,
                     call_data: payload,
                 };
 

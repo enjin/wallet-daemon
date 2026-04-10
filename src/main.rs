@@ -12,13 +12,12 @@ use crate::importer::write_seed;
 use crate::multitenant::set_multitenant;
 use crate::substrate_client::EnjinConfig;
 use crate::transaction::TransactionJob;
+use crate::types::*;
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::load_wallet;
 
 pub type SubstrateClient = OfflineClient<EnjinConfig>;
 
-pub const CHAIN: wallet_loader::Chain = wallet_loader::Chain::Matrix;
-pub const NETWORK: wallet_loader::ConfigNetwork = wallet_loader::ConfigNetwork::Enjin;
 pub const DEFAULT_PLATFORM_URL: &str = "https://platform.enjin.io/graphql/daemon";
 pub const TX_MORTALITY: u64 = 64;
 pub const DUMMY_TX_MORTALITY: u64 = 14_400;
@@ -29,9 +28,9 @@ mod graphql;
 mod importer;
 mod multitenant;
 mod platform_client;
-mod subscription;
 pub mod substrate_client;
 mod transaction;
+mod types;
 mod wallet;
 mod wallet_loader;
 
