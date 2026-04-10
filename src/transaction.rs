@@ -136,9 +136,6 @@ impl TransactionJob {
         &self,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
         let res = GetPendingTransactions::build_query(get_pending_transactions::Variables {
-            // TODO: get these from config
-            network: crate::NETWORK.into(),
-            chain: crate::CHAIN.into(),
             limit: TRANSACTION_PAGE_SIZE,
             cursor: None,
         });

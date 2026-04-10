@@ -3,6 +3,22 @@ use graphql_client::GraphQLQuery;
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",
+    query_path = "graphql/get_account_nonce.graphql",
+    response_derives = "Debug"
+)]
+pub struct GetAccountNonce;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/get_chain_info.graphql",
+    response_derives = "Debug"
+)]
+pub struct GetChainInfo;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
     query_path = "graphql/get_pending_transactions.graphql",
     response_derives = "Debug"
 )]

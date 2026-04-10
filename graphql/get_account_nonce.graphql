@@ -1,0 +1,3 @@
+query GetAccountNonce($network: Network!, $chain: Chain!, $address: String!) {
+  result: GetAccountNonce(network: $network, chain: $chain, address: $address)
+}

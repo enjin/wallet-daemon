@@ -1,0 +1,9 @@
+query GetChainInfo($network: Network!, $chain: Chain!) {
+  result: GetChainInfo(network: $network, chain: $chain) {
+    currentBlockNumber
+    specVersion
+    transactionVersion
+    metadataVersion
+    metadata
+  }
+}
