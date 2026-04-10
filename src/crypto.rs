@@ -3,6 +3,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 const SALT_LEN: usize = 16;
@@ -72,8 +73,8 @@ fn base64_encode(data: &[u8]) -> String {
 pub fn encrypt(plaintext: &str, password: &str) -> String {
     let mut salt = [0u8; SALT_LEN];
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
+    rand::rng().fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let key = derive_key(password, &salt).expect("key derivation failed");
     let cipher = Aes256Gcm::new_from_slice(&key).expect("valid key size");
