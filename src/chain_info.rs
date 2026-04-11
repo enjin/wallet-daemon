@@ -7,7 +7,7 @@ use std::sync::Arc;
 use subxt::Metadata;
 
 /// Fetch and insert the metadata for `network` and `chain`
-pub async fn update_metadata(
+pub async fn update_metadata_and_substrate_client(
     network: Network,
     chain: Chain,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -45,7 +45,7 @@ pub async fn update_metadata(
     )
     .await;
 
-    // TODO: update client
+    // TODO: update substrate client
 
     Ok(())
 }

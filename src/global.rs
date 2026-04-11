@@ -10,7 +10,9 @@ static METADATA: LazyLock<RwLock<HashMap<(Network, Chain), MetadataInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 pub static GRAPHQL_CLIENT: LazyLock<RwLock<reqwest::Client>> =
     LazyLock::new(|| RwLock::new(reqwest::Client::new()));
-/// TODO: can make an enum for the configs and implement Config
+// TODO: can make an enum for the configs and implement Config
+// TODO: it may be better to store client and metadata together in the same HashMap
+
 // static SUBSTRATE_CLIENTS: LazyLock<RwLock<HashMap<(Network, Chain), OfflineClient<>>>> =
 //     LazyLock::new(|| RwLock::new(HashMap::new()));
 

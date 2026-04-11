@@ -225,7 +225,7 @@ impl TransactionProcessor {
             {
                 // TODO: check the spec version here
             } else {
-                if let Err(e) = chain_info::update_metadata(network, chain).await {
+                if let Err(e) = chain_info::update_metadata_and_substrate_client(network, chain).await {
                     tracing::error!("failed to update metadata for {network:?} {chain:?}: {e:?}");
                 }
             }
