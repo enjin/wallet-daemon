@@ -1,3 +1,4 @@
+use crate::SubstrateClient;
 use crate::types::{Chain, MetadataInfo, Network};
 use reqwest::header::HeaderMap;
 use std::collections::HashMap;
@@ -6,20 +7,16 @@ use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
 use tokio::sync::RwLock;
 
 // Mutable
+/// Stores metadata, spec_version, and client
 static METADATA: LazyLock<RwLock<HashMap<(Network, Chain), MetadataInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+/// The qraphql client that fetches chain info
 pub static GRAPHQL_CLIENT: LazyLock<RwLock<reqwest::Client>> =
     LazyLock::new(|| RwLock::new(reqwest::Client::new()));
-// TODO: can make an enum for the configs and implement Config
-// TODO: it may be better to store client and metadata together in the same HashMap
-
-// static SUBSTRATE_CLIENTS: LazyLock<RwLock<HashMap<(Network, Chain), OfflineClient<>>>> =
-//     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 // Immutable
 pub(super) static HEADERS: OnceLock<HeaderMap> = OnceLock::new();
 pub(super) static PLATFORM_URL: OnceLock<String> = OnceLock::new();
-/// The qraphql client that fetches chain info
 
 // setters
 pub async fn insert_metadata(network: Network, chain: Chain, metadata: MetadataInfo) {
@@ -58,4 +55,12 @@ pub async fn metadata_names(
         .extrinsic_call_info_by_index(pallet_index, call_index)
         .ok()
         .map(|x| (x.pallet_name.to_string(), x.call_name.to_string()))
+}
+
+pub async fn client(network: Network, chain: Chain) -> Option<SubstrateClient> {
+    METADATA
+        .read()
+        .await
+        .get(&(network, chain))
+        .map(|m| m.client.clone())
 }

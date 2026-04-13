@@ -1,3 +1,4 @@
+use crate::SubstrateClient;
 use std::sync::Arc;
 use subxt::Metadata;
 
@@ -98,4 +99,5 @@ impl From<Network> for crate::graphql::get_chain_info::Network {
 pub struct MetadataInfo {
     pub spec_version: u32,
     pub metadata: Arc<Metadata>,
+    pub client: SubstrateClient,
 }

@@ -4,9 +4,7 @@ use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::types::{Chain, Network};
-use crate::{
-    DUMMY_TX_MORTALITY, SubstrateClient, TX_MORTALITY, chain_info, global, platform_client,
-};
+use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
@@ -91,15 +89,12 @@ impl TransactionJob {
         Self { client, sender }
     }
 
-    pub fn create_job(
-        rpc: Arc<SubstrateClient>,
-        keypair: Keypair,
-    ) -> (TransactionJob, TransactionProcessor) {
+    pub fn create_job(keypair: Keypair) -> (TransactionJob, TransactionProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
         (
             TransactionJob::new(Client::new(), sender),
-            TransactionProcessor::new(rpc, Client::new(), keypair, receiver),
+            TransactionProcessor::new(Client::new(), keypair, receiver),
         )
     }
 
@@ -181,7 +176,6 @@ impl TransactionJob {
 }
 
 pub struct TransactionProcessor {
-    chain_client: Arc<SubstrateClient>,
     platform_client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
@@ -189,13 +183,11 @@ pub struct TransactionProcessor {
 
 impl TransactionProcessor {
     pub(crate) fn new(
-        rpc: Arc<SubstrateClient>,
         client: Client,
         keypair: Keypair,
         receiver: Receiver<Vec<TransactionRequest>>,
     ) -> Self {
         Self {
-            chain_client: rpc,
             platform_client: client,
             keypair,
             receiver,
@@ -203,7 +195,6 @@ impl TransactionProcessor {
     }
 
     async fn transaction_handler(
-        chain_client: Arc<SubstrateClient>,
         platform_client: Client,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
@@ -221,14 +212,24 @@ impl TransactionProcessor {
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
 
-            if let Some(_stored_spec_version) = global::metadata_spec_version(network, chain).await
+            // TODO: get block number
+
+            let _block_number = if let Some(_stored_spec_version) =
+                global::metadata_spec_version(network, chain).await
             {
+                0
                 // TODO: check the spec version here
             } else {
-                if let Err(e) = chain_info::update_metadata_and_substrate_client(network, chain).await {
-                    tracing::error!("failed to update metadata for {network:?} {chain:?}: {e:?}");
+                match chain_info::update_metadata_and_substrate_client(network, chain).await {
+                    Ok(block_number) => block_number,
+                    Err(e) => {
+                        tracing::error!(
+                            "failed to update metadata for {network:?} {chain:?}: {e:?}"
+                        );
+                        continue;
+                    }
                 }
-            }
+            };
 
             let signer = if let Some(external_id) = external_id {
                 let derive_junction = match external_id.parse::<i64>() {
@@ -336,6 +337,9 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal(DUMMY_TX_MORTALITY)
                     .build();
+                let chain_client = global::client(network, chain)
+                    .await
+                    .expect("client missing");
                 let client_at_block = chain_client.at_block(block_temp).unwrap();
                 let signed_dummy_tx = match client_at_block
                     .tx()
@@ -388,6 +392,9 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal(TX_MORTALITY)
                     .build();
+                let chain_client = global::client(network, chain)
+                    .await
+                    .expect("client missing");
                 let client_at_block = chain_client
                     .at_block(block_temp)
                     .expect("client metadata or spec data missing");
@@ -431,7 +438,6 @@ impl TransactionProcessor {
 
         while let Some(requests) = self.receiver.recv().await {
             tokio::spawn(Self::transaction_handler(
-                Arc::clone(&self.chain_client),
                 self.platform_client.clone(),
                 self.keypair.clone(),
                 Arc::clone(&nonce_tracker),

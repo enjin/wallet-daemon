@@ -5,7 +5,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
-use std::sync::Arc;
 use subxt::OfflineClient;
 
 use crate::importer::write_seed;
@@ -97,10 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing_subscriber::fmt::init();
     set_multitenant(keypair.clone(), platform_url.clone()).await;
-    let matrix_client = substrate_client::setup_client().await;
 
-    let (matrix_tx_poller, matrix_tx_processor) =
-        TransactionJob::create_job(Arc::clone(&matrix_client), keypair.clone());
+    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(keypair.clone());
 
     let (wallet_poller, wallet_processor) = DeriveWalletJob::create_job(keypair);
 
