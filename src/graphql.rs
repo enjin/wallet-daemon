@@ -8,6 +8,19 @@ use graphql_client::GraphQLQuery;
 )]
 pub struct GetAccountNonce;
 
+// doesn't use all of the fields
+mod truncated {
+    #[derive(graphql_client::GraphQLQuery)]
+    #[graphql(
+        schema_path = "graphql/schema.graphql",
+        query_path = "graphql/get_current_block_number.graphql",
+        response_derives = "Debug"
+    )]
+    pub struct GetChainInfo;
+}
+pub use truncated::GetChainInfo as GetCurrentBlockNumber;
+pub use truncated::get_chain_info as get_current_block_number;
+
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "graphql/schema.graphql",

@@ -201,6 +201,7 @@ impl TransactionProcessor {
         requests: Vec<TransactionRequest>,
     ) {
         let mut inputs = Vec::with_capacity(requests.len());
+
         for request in requests {
             let TransactionRequest {
                 request_id,
@@ -212,24 +213,35 @@ impl TransactionProcessor {
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
 
-            // TODO: get block number
-
-            let _block_number = if let Some(_stored_spec_version) =
-                global::metadata_spec_version(network, chain).await
-            {
-                0
-                // TODO: check the spec version here
-            } else {
-                match chain_info::update_metadata_and_substrate_client(network, chain).await {
-                    Ok(block_number) => block_number,
-                    Err(e) => {
-                        tracing::error!(
-                            "failed to update metadata for {network:?} {chain:?}: {e:?}"
-                        );
-                        continue;
-                    }
-                }
+            // get block number
+            let Ok((block_number, spec_version)) =
+                chain_info::get_block_and_spec_version(network, chain).await
+            else {
+                tracing::error!("could not fetch block number");
+                continue;
             };
+
+            // check update metadata
+            {
+                let mut update_metadata = false;
+                if let Some(local_spec_version) =
+                    global::metadata_spec_version(network, chain).await
+                {
+                    if local_spec_version < spec_version {
+                        update_metadata = true;
+                    }
+                } else {
+                    update_metadata = true;
+                }
+
+                if update_metadata
+                    && let Err(e) =
+                        chain_info::update_metadata_and_substrate_client(network, chain).await
+                {
+                    tracing::error!("failed to update metadata for {network:?} {chain:?}: {e:?}");
+                    continue;
+                }
+            }
 
             let signer = if let Some(external_id) = external_id {
                 let derive_junction = match external_id.parse::<i64>() {
@@ -249,12 +261,14 @@ impl TransactionProcessor {
             );
 
             let public_key = hex::encode(signer.public_key().0);
-            // let chain_nonce = chain_client
-            //     .tx()
-            //     .account_nonce(&signer.public_key().into())
-            //     .await
-            //     .unwrap();
-            let chain_nonce = 0_u64; // TODO: this is temporary
+            let chain_nonce =
+                match chain_info::get_account_nonce(network, chain, &signer.public_key()).await {
+                    Ok(nonce) => nonce,
+                    Err(e) => {
+                        tracing::error!("failed to fetch nonce for {public_key} with error: {e:?}");
+                        continue;
+                    }
+                };
             let correct_nonce: u64;
             {
                 let mut tracker = nonce_tracker.lock().unwrap();
@@ -270,14 +284,7 @@ impl TransactionProcessor {
 
             if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
                 // expiration block is needed for the signature
-                // let expiration_block = match chain_client.blocks().at_latest().await {
-                //     Ok(block) => block.number() + TX_MORTALITY as u32,
-                //     Err(e) => {
-                //         tracing::error!("failed to get block number: {e}");
-                //         continue;
-                //     }
-                // };
-                let expiration_block = 0_u32;
+                let expiration_block = block_number + TX_MORTALITY as u32;
 
                 // remove the last byte of the payload because it is the settings param, and we are
                 // replacing it

@@ -49,6 +49,24 @@ impl From<Chain> for crate::graphql::get_chain_info::Chain {
     }
 }
 
+impl From<Chain> for crate::graphql::get_current_block_number::Chain {
+    fn from(value: Chain) -> Self {
+        match value {
+            Chain::Matrix => Self::MATRIX,
+            Chain::Relay => Self::RELAY,
+        }
+    }
+}
+
+impl From<Chain> for crate::graphql::get_account_nonce::Chain {
+    fn from(value: Chain) -> Self {
+        match value {
+            Chain::Matrix => Self::MATRIX,
+            Chain::Relay => Self::RELAY,
+        }
+    }
+}
+
 #[derive(Eq, Hash, PartialEq, Copy, Clone, Debug)]
 pub enum Network {
     Canary,
@@ -88,6 +106,24 @@ impl From<Network> for crate::graphql::get_pending_managed_wallet_creations::Net
 }
 
 impl From<Network> for crate::graphql::get_chain_info::Network {
+    fn from(value: Network) -> Self {
+        match value {
+            Network::Canary => Self::CANARY,
+            Network::Enjin => Self::ENJIN,
+        }
+    }
+}
+
+impl From<Network> for crate::graphql::get_current_block_number::Network {
+    fn from(value: Network) -> Self {
+        match value {
+            Network::Canary => Self::CANARY,
+            Network::Enjin => Self::ENJIN,
+        }
+    }
+}
+
+impl From<Network> for crate::graphql::get_account_nonce::Network {
     fn from(value: Network) -> Self {
         match value {
             Network::Canary => Self::CANARY,

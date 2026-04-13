@@ -1,4 +1,9 @@
-use crate::graphql::{GetChainInfo, get_chain_info};
+//! Retrieving data about the blockchain
+
+use crate::graphql::{
+    GetAccountNonce, GetChainInfo, GetCurrentBlockNumber, get_account_nonce, get_chain_info,
+    get_current_block_number,
+};
 use crate::substrate_client::EnjinConfig;
 use crate::types::{Chain, MetadataInfo, Network};
 use crate::{SubstrateClient, global};
@@ -9,12 +14,13 @@ use std::sync::Arc;
 use subxt::config::substrate::SpecVersionForRange;
 use subxt::utils::H256;
 use subxt::{Metadata, SubstrateConfig};
+use subxt_signer::sr25519::PublicKey;
 
-/// Fetch and insert the metadata for `network` and `chain`. Returns the current block number.
+/// Fetch and insert the metadata for `network` and `chain`.
 pub async fn update_metadata_and_substrate_client(
     network: Network,
     chain: Chain,
-) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let query = GetChainInfo::build_query(get_chain_info::Variables {
         network: network.into(),
         chain: chain.into(),
@@ -70,9 +76,39 @@ pub async fn update_metadata_and_substrate_client(
     )
     .await;
 
-    Ok(info.current_block_number as u32)
+    Ok(())
 }
 
+/// Get the current block and spec version from a graphql query
+pub async fn get_block_and_spec_version(
+    network: Network,
+    chain: Chain,
+) -> Result<(u32, u32), Box<dyn std::error::Error + Send + Sync>> {
+    let query = GetCurrentBlockNumber::build_query(get_current_block_number::Variables {
+        network: network.into(),
+        chain: chain.into(),
+    });
+
+    let client = global::GRAPHQL_CLIENT.write().await;
+
+    let response = client
+        .post(global::platform_url())
+        .headers(global::headers())
+        .json(&query)
+        .send()
+        .await?;
+
+    let response_body: graphql_client::Response<get_current_block_number::ResponseData> =
+        response.json().await?;
+
+    let response_data = response_body
+        .data
+        .ok_or("no response data for current block")?;
+    let info = response_data.result.ok_or("no result for current block")?;
+    Ok((info.current_block_number as u32, info.spec_version as u32))
+}
+
+/// Get the genesis hash for a network and chain
 fn get_genesis_hash(network: Network, chain: Chain) -> H256 {
     H256::from(match (network, chain) {
         (Network::Canary, Chain::Relay) => {
@@ -88,4 +124,33 @@ fn get_genesis_hash(network: Network, chain: Chain) -> H256 {
             hex!("3af4ff48ec76d2efc8476730f423ac07e25ad48f5f4c9dc39c778b164d808615")
         }
     })
+}
+
+pub async fn get_account_nonce(
+    network: Network,
+    chain: Chain,
+    account: &PublicKey,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    let query = GetAccountNonce::build_query(get_account_nonce::Variables {
+        network: network.into(),
+        chain: chain.into(),
+        address: format!("0x{}", hex::encode(account.0)),
+    });
+
+    let client = global::GRAPHQL_CLIENT.write().await;
+
+    let response = client
+        .post(global::platform_url())
+        .headers(global::headers())
+        .json(&query)
+        .send()
+        .await?;
+
+    let response_body: graphql_client::Response<get_account_nonce::ResponseData> =
+        response.json().await?;
+
+    let response_data = response_body
+        .data
+        .ok_or("no response data for current block")?;
+    Ok(response_data.result as u64)
 }
