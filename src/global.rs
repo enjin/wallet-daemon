@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 static METADATA: LazyLock<RwLock<HashMap<(Network, Chain), MetadataInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 /// The qraphql client that fetches chain info
-pub static GRAPHQL_CLIENT: LazyLock<RwLock<reqwest::Client>> =
+static GRAPHQL_CLIENT: LazyLock<RwLock<reqwest::Client>> =
     LazyLock::new(|| RwLock::new(reqwest::Client::new()));
 
 // Immutable
@@ -62,4 +62,9 @@ pub async fn substrate_client(network: Network, chain: Chain) -> Option<Substrat
         .await
         .get(&(network, chain))
         .map(|m| m.client.clone())
+}
+
+/// Get a reference to the client. The internal type is Arc, so cloning gives a reference.
+pub async fn graphql_client() -> reqwest::Client {
+    GRAPHQL_CLIENT.read().await.clone()
 }

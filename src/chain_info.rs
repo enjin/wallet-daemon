@@ -26,7 +26,7 @@ pub async fn update_metadata_and_substrate_client(
         chain: chain.into(),
     });
 
-    let client = global::GRAPHQL_CLIENT.write().await;
+    let client = global::graphql_client().await;
 
     let response = client
         .post(global::platform_url())
@@ -89,7 +89,7 @@ pub async fn get_block_and_spec_version(
         chain: chain.into(),
     });
 
-    let client = global::GRAPHQL_CLIENT.write().await;
+    let client = global::graphql_client().await;
 
     let response = client
         .post(global::platform_url())
@@ -137,7 +137,7 @@ pub async fn get_account_nonce(
         address: format!("0x{}", hex::encode(account.0)),
     });
 
-    let client = global::GRAPHQL_CLIENT.write().await;
+    let client = global::graphql_client().await;
 
     let response = client
         .post(global::platform_url())

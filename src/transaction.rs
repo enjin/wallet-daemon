@@ -10,7 +10,7 @@ use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
 use payload::RawPayload;
-use reqwest::{Client, Response};
+use reqwest::Response;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -135,21 +135,20 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
 
 #[derive(Debug)]
 pub struct TransactionJob {
-    client: Client,
     sender: Sender<Vec<TransactionRequest>>,
 }
 
 impl TransactionJob {
-    pub fn new(client: Client, sender: Sender<Vec<TransactionRequest>>) -> Self {
-        Self { client, sender }
+    pub fn new(sender: Sender<Vec<TransactionRequest>>) -> Self {
+        Self { sender }
     }
 
     pub fn create_job(keypair: Keypair) -> (TransactionJob, TransactionProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
         (
-            TransactionJob::new(Client::new(), sender),
-            TransactionProcessor::new(Client::new(), keypair, receiver),
+            TransactionJob::new(sender),
+            TransactionProcessor::new(keypair, receiver),
         )
     }
 
@@ -191,8 +190,8 @@ impl TransactionJob {
             cursor: None,
         });
 
-        let res = self
-            .client
+        let res = global::graphql_client()
+            .await
             .post(global::platform_url())
             .headers(global::headers())
             .json(&res)
@@ -231,26 +230,16 @@ impl TransactionJob {
 }
 
 pub struct TransactionProcessor {
-    platform_client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
 }
 
 impl TransactionProcessor {
-    pub(crate) fn new(
-        client: Client,
-        keypair: Keypair,
-        receiver: Receiver<Vec<TransactionRequest>>,
-    ) -> Self {
-        Self {
-            platform_client: client,
-            keypair,
-            receiver,
-        }
+    pub(crate) fn new(keypair: Keypair, receiver: Receiver<Vec<TransactionRequest>>) -> Self {
+        Self { keypair, receiver }
     }
 
     async fn transaction_handler(
-        platform_client: Client,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
         requests: Vec<TransactionRequest>,
@@ -477,7 +466,7 @@ impl TransactionProcessor {
                 signed_abandon_extrinsic: dummy_tx.clone(),
             });
         }
-        platform_client::sign_transactions(platform_client.clone(), inputs).await;
+        platform_client::sign_transactions(inputs).await;
     }
 
     async fn launch_job_scheduler(mut self) {
@@ -486,7 +475,6 @@ impl TransactionProcessor {
 
         while let Some(requests) = self.receiver.recv().await {
             tokio::spawn(Self::transaction_handler(
-                self.platform_client.clone(),
                 self.keypair.clone(),
                 Arc::clone(&nonce_tracker),
                 requests,

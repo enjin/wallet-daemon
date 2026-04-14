@@ -21,13 +21,14 @@ impl PlatformExponentialBuilder {
     }
 }
 
-pub async fn sign_transactions(client: Client, transactions: Vec<SignTransactionInput>) {
+pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
     let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
     let request_body = SignTransactions::build_query(sign_transactions::Variables { transactions });
 
     let res = (|| async {
-        client
+        global::graphql_client()
+            .await
             .post(global::platform_url())
             .headers(global::headers())
             .json(&request_body)
