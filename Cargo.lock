@@ -4981,6 +4981,7 @@ dependencies = [
  "rand 0.10.0",
  "reqwest",
  "rpassword",
+ "scale-encode",
  "scale-info-legacy",
  "serde",
  "serde_json",

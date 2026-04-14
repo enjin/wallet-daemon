@@ -3,16 +3,19 @@ mod fuel_tank;
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::transaction::fuel_tank::ExpirableSignature;
+use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
+use payload::RawPayload;
 use reqwest::{Client, Response};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
+use subxt::utils::H256;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -23,25 +26,77 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
-struct PayloadWrapper<'a> {
-    pub pallet_name: &'a str,
-    pub call_name: &'a str,
-    pub call_data: Vec<u8>,
-}
+mod payload {
+    use crate::global;
+    use crate::types::{Chain, Network};
+    use scale_encode::{EncodeAsFields, FieldIter, TypeResolver};
 
-impl subxt::tx::Payload for PayloadWrapper<'_> {
-    type CallData = Vec<u8>;
+    use subxt::error::EncodeError;
+    use subxt::transactions::Payload;
 
-    fn pallet_name(&self) -> &str {
-        self.pallet_name
+    pub type Bytes = Vec<u8>;
+
+    pub struct RawPayload {
+        pub pallet_name: String,
+        pub call_name: String,
+        pub field_bytes: RawFields,
     }
 
-    fn call_name(&self) -> &str {
-        self.call_name
+    pub struct RawFields(pub Bytes);
+
+    impl EncodeAsFields for RawFields {
+        fn encode_as_fields_to<R: TypeResolver>(
+            &self,
+            _fields: &mut dyn FieldIter<'_, R::TypeId>,
+            _types: &R,
+            out: &mut Bytes,
+        ) -> Result<(), EncodeError> {
+            out.extend_from_slice(&self.0);
+            Ok(())
+        }
     }
 
-    fn call_data(&self) -> &Self::CallData {
-        &self.call_data
+    impl Payload for RawPayload {
+        type CallData = RawFields;
+
+        fn pallet_name(&self) -> &str {
+            &self.pallet_name
+        }
+        fn call_name(&self) -> &str {
+            &self.call_name
+        }
+        fn call_data(&self) -> &RawFields {
+            &self.field_bytes
+        }
+    }
+
+    impl RawPayload {
+        pub async fn from_bytes(network: Network, chain: Chain, bytes: &[u8]) -> Option<Self> {
+            let pallet_index = bytes.first()?;
+            let call_index = bytes.get(1)?;
+            let (pallet_name, call_name) = match global::metadata_names(
+                network,
+                chain,
+                *pallet_index,
+                *call_index,
+            )
+            .await
+            {
+                Some(x) => x,
+                None => {
+                    tracing::error!(
+                        "extinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
+                    );
+                    return None;
+                }
+            };
+
+            Some(Self {
+                pallet_name,
+                call_name,
+                field_bytes: RawFields(bytes[2..].to_vec()),
+            })
+        }
     }
 }
 
@@ -331,23 +386,22 @@ impl TransactionProcessor {
                 tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
             }
 
-            let block_temp = 1000_u64;
             let dummy_tx = {
                 // this is system.remark with empty value: 0x000000
-                let payload = vec![0, 0, 0];
-                let payload = PayloadWrapper {
-                    pallet_name: "System",
-                    call_name: "remark",
-                    call_data: payload,
+                let payload = RawPayload {
+                    pallet_name: "System".to_string(),
+                    call_name: "remark".to_string(),
+                    field_bytes: RawFields(vec![0]),
                 };
                 let params = DefaultExtrinsicParamsBuilder::new()
                     .nonce(correct_nonce)
-                    .mortal(DUMMY_TX_MORTALITY)
+                    // TODO: need current block hash
+                    .mortal_from_unchecked(DUMMY_TX_MORTALITY, block_number.into(), H256::zero())
                     .build();
-                let chain_client = global::client(network, chain)
+                let chain_client = global::substrate_client(network, chain)
                     .await
                     .expect("client missing");
-                let client_at_block = chain_client.at_block(block_temp).unwrap();
+                let client_at_block = chain_client.at_block(block_number).unwrap();
                 let signed_dummy_tx = match client_at_block
                     .tx()
                     .create_signable_offline(&payload, params)
@@ -372,38 +426,25 @@ impl TransactionProcessor {
                     tracing::error!("payload does not store pallet index and call index");
                     continue;
                 }
-                let pallet_index = payload[0];
-                let call_index = payload[1];
-                // TODO: use proper chains here
-                let Some((pallet_name, call_name)) = global::metadata_names(
-                    Network::Canary,
-                    Chain::Matrix,
-                    pallet_index,
-                    call_index,
-                )
-                .await
-                else {
-                    tracing::error!(
-                        "extinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
-                    );
-                    continue;
-                };
-                let payload = PayloadWrapper {
-                    pallet_name: &pallet_name,
-                    call_name: &call_name,
-                    call_data: payload,
+                let payload = match RawPayload::from_bytes(network, chain, &payload).await {
+                    Some(x) => x,
+                    None => {
+                        tracing::error!("generating raw payload failed");
+                        continue;
+                    }
                 };
 
                 // sign extrinsic
                 let params = DefaultExtrinsicParamsBuilder::new()
                     .nonce(correct_nonce)
-                    .mortal(TX_MORTALITY)
+                    // TODO: need current block hash
+                    .mortal_from_unchecked(TX_MORTALITY, block_number.into(), H256::zero())
                     .build();
-                let chain_client = global::client(network, chain)
+                let chain_client = global::substrate_client(network, chain)
                     .await
                     .expect("client missing");
                 let client_at_block = chain_client
-                    .at_block(block_temp)
+                    .at_block(block_number)
                     .expect("client metadata or spec data missing");
                 match client_at_block
                     .tx()

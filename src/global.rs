@@ -46,7 +46,6 @@ pub async fn metadata_names(
     pallet_index: u8,
     call_index: u8,
 ) -> Option<(String, String)> {
-    // TODO: avoid cloning the strings here
     METADATA
         .read()
         .await
@@ -57,7 +56,7 @@ pub async fn metadata_names(
         .map(|x| (x.pallet_name.to_string(), x.call_name.to_string()))
 }
 
-pub async fn client(network: Network, chain: Chain) -> Option<SubstrateClient> {
+pub async fn substrate_client(network: Network, chain: Chain) -> Option<SubstrateClient> {
     METADATA
         .read()
         .await
