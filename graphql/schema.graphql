@@ -87,6 +87,7 @@ type ManagedWallet {
 
 type ChainInfo {
   currentBlockNumber: Int!
+  currentBlockHash: String!
   specVersion: Int!
   transactionVersion: Int!
   metadataVersion: Int!
@@ -116,7 +117,7 @@ type Query {
   GetAccountNonce(network: Network!, chain: Chain!, address: String!): Int!
   GetChainInfo(network: Network!, chain: Chain!): ChainInfo
   GetPendingTransactions(limit: Int = 25, cursor: String): PendingTransactionCursorPagination
-  GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): ManagedWalletCursorPagination
+  GetPendingManagedWalletCreations(limit: Int = 25, cursor: String): ManagedWalletCursorPagination
 }
 
 type Mutation {

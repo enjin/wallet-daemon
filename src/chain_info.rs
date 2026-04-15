@@ -83,7 +83,7 @@ pub async fn update_metadata_and_substrate_client(
 pub async fn get_block_and_spec_version(
     network: Network,
     chain: Chain,
-) -> Result<(u32, u32), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(u32, H256, u32), Box<dyn std::error::Error + Send + Sync>> {
     let query = GetCurrentBlockNumber::build_query(get_current_block_number::Variables {
         network: network.into(),
         chain: chain.into(),
@@ -105,7 +105,17 @@ pub async fn get_block_and_spec_version(
         .data
         .ok_or("no response data for current block")?;
     let info = response_data.result.ok_or("no result for current block")?;
-    Ok((info.current_block_number as u32, info.spec_version as u32))
+    let block_hash = info
+        .current_block_hash
+        .split('x')
+        .nth(1)
+        .ok_or("decode block hash failed")?;
+    let block_hash = hex::decode(block_hash)?;
+    Ok((
+        info.current_block_number as u32,
+        H256::from_slice(&block_hash),
+        info.spec_version as u32,
+    ))
 }
 
 /// Get the genesis hash for a network and chain
@@ -137,9 +147,8 @@ pub async fn get_account_nonce(
         address: format!("0x{}", hex::encode(account.0)),
     });
 
-    let client = global::graphql_client().await;
-
-    let response = client
+    let response = global::graphql_client()
+        .await
         .post(global::platform_url())
         .headers(global::headers())
         .json(&query)

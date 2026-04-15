@@ -15,7 +15,6 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
-use subxt::utils::H256;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -258,7 +257,7 @@ impl TransactionProcessor {
             tracing::info!("Received transaction request: #{request_id}");
 
             // get block number
-            let Ok((block_number, spec_version)) =
+            let Ok((block_number, block_hash, spec_version)) =
                 chain_info::get_block_and_spec_version(network, chain).await
             else {
                 tracing::error!("could not fetch block number");
@@ -384,8 +383,7 @@ impl TransactionProcessor {
                 };
                 let params = DefaultExtrinsicParamsBuilder::new()
                     .nonce(correct_nonce)
-                    // TODO: need current block hash
-                    .mortal_from_unchecked(DUMMY_TX_MORTALITY, block_number.into(), H256::zero())
+                    .mortal_from_unchecked(DUMMY_TX_MORTALITY, block_number.into(), block_hash)
                     .build();
                 let chain_client = global::substrate_client(network, chain)
                     .await
@@ -426,8 +424,7 @@ impl TransactionProcessor {
                 // sign extrinsic
                 let params = DefaultExtrinsicParamsBuilder::new()
                     .nonce(correct_nonce)
-                    // TODO: need current block hash
-                    .mortal_from_unchecked(TX_MORTALITY, block_number.into(), H256::zero())
+                    .mortal_from_unchecked(TX_MORTALITY, block_number.into(), block_hash)
                     .build();
                 let chain_client = global::substrate_client(network, chain)
                     .await

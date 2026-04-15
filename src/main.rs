@@ -11,7 +11,6 @@ use crate::importer::write_seed;
 use crate::multitenant::set_multitenant;
 use crate::substrate_client::EnjinConfig;
 use crate::transaction::TransactionJob;
-use crate::types::*;
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::load_wallet;
 

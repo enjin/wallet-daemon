@@ -31,15 +31,6 @@ impl TryFrom<crate::graphql::get_pending_transactions::Chain> for Chain {
     }
 }
 
-impl From<Chain> for crate::graphql::get_pending_managed_wallet_creations::Chain {
-    fn from(value: Chain) -> Self {
-        match value {
-            Chain::Matrix => Self::MATRIX,
-            Chain::Relay => Self::RELAY,
-        }
-    }
-}
-
 impl From<Chain> for crate::graphql::get_chain_info::Chain {
     fn from(value: Chain) -> Self {
         match value {
@@ -92,15 +83,6 @@ impl TryFrom<crate::graphql::get_pending_transactions::Network> for Network {
             crate::graphql::get_pending_transactions::Network::CANARY => Ok(Self::Canary),
             crate::graphql::get_pending_transactions::Network::ENJIN => Ok(Self::Enjin),
             crate::graphql::get_pending_transactions::Network::Other(e) => Err(e),
-        }
-    }
-}
-
-impl From<Network> for crate::graphql::get_pending_managed_wallet_creations::Network {
-    fn from(value: Network) -> Self {
-        match value {
-            Network::Canary => Self::CANARY,
-            Network::Enjin => Self::ENJIN,
         }
     }
 }
