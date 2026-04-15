@@ -40,6 +40,11 @@ pub async fn update_metadata_and_substrate_client(
 
     let response_data = response_body.data.ok_or("no response data for metadata")?;
     let info = response_data.result.ok_or("no result for metadata")?;
+
+    if info.metadata_version > 16 {
+        return Err("metadata version greater than 16 is not supported".into());
+    }
+
     let metadata_bytes = hex::decode(info.metadata.split('x').nth(1).ok_or("missing 0x")?)?;
     let option: Option<Vec<u8>> = Decode::decode(&mut &metadata_bytes[..])?;
     let metadata_bytes = option.ok_or("No metadata returned")?;
@@ -105,6 +110,7 @@ pub async fn get_block_and_spec_version(
         .data
         .ok_or("no response data for current block")?;
     let info = response_data.result.ok_or("no result for current block")?;
+
     let block_hash = info
         .current_block_hash
         .split('x')
