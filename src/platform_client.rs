@@ -1,12 +1,11 @@
-use crate::global;
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{
     PopulateManagedWallets, SignTransactions, populate_managed_wallets, sign_transactions,
 };
-use backon::{ExponentialBuilder, Retryable};
+use crate::utils;
+use backon::ExponentialBuilder;
 use graphql_client::GraphQLQuery;
-use reqwest::Client;
 use std::time::Duration;
 
 pub struct PlatformExponentialBuilder();
@@ -24,75 +23,42 @@ impl PlatformExponentialBuilder {
 pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
     let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
-    let request_body = SignTransactions::build_query(sign_transactions::Variables { transactions });
-
-    let res = (|| async {
-        global::graphql_client()
-            .await
-            .post(global::platform_url())
-            .headers(global::headers())
-            .json(&request_body)
-            .send()
-            .await
-    })
-    .retry(PlatformExponentialBuilder::default())
+    let res = utils::execute_query_with_retry::<SignTransactions>(
+        SignTransactions::build_query(sign_transactions::Variables { transactions }),
+        PlatformExponentialBuilder::default(),
+    )
     .await;
 
     match res {
-        Ok(res) => match res
-            .json::<graphql_client::Response<sign_transactions::ResponseData>>()
-            .await
-        {
-            Ok(r) => {
-                tracing::info!("Response from platform: {:?}", r);
-                for uuid in uuids {
-                    tracing::info!("Signed transaction #{}", uuid);
-                }
+        Ok(r) => {
+            tracing::info!("Response from platform: {:?}", r);
+            for uuid in uuids {
+                tracing::info!("Signed transaction #{}", uuid);
             }
-            Err(e) => {
-                tracing::error!("Error decoding response of the platform: {:?}", e);
-            }
-        },
+        }
         Err(e) => tracing::error!("Error sending UpdateTransaction: {:?}", e),
     }
 }
 
-pub async fn populate_managed_wallets(client: Client, wallets: Vec<PopulateManagedWalletInput>) {
+pub async fn populate_managed_wallets(wallets: Vec<PopulateManagedWalletInput>) {
     let external_ids_and_accounts: Vec<(String, String)> = wallets
         .iter()
         .map(|x| (x.external_id.clone(), x.public_key.clone()))
         .collect();
 
-    let request_body =
-        PopulateManagedWallets::build_query(populate_managed_wallets::Variables { wallets });
-
-    let res = (|| async {
-        client
-            .post(global::platform_url())
-            .headers(global::headers())
-            .json(&request_body)
-            .send()
-            .await
-    })
-    .retry(PlatformExponentialBuilder::default())
+    let res = utils::execute_query_with_retry::<PopulateManagedWallets>(
+        PopulateManagedWallets::build_query(populate_managed_wallets::Variables { wallets }),
+        PlatformExponentialBuilder::default(),
+    )
     .await;
 
     match res {
-        Ok(res) => match res
-            .json::<graphql_client::Response<populate_managed_wallets::ResponseData>>()
-            .await
-        {
-            Ok(r) => {
-                tracing::info!("Response from platform: {:?}", r);
-                for (external_id, account) in external_ids_and_accounts {
-                    tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
-                }
+        Ok(r) => {
+            tracing::info!("Response from platform: {:?}", r);
+            for (external_id, account) in external_ids_and_accounts {
+                tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
             }
-            Err(e) => tracing::error!(
-                "Error decoding body {:?} of response to submitted account",
-                e
-            ),
-        },
+        }
         Err(e) => tracing::error!(
             "Error decoding body {:?} of response to submitted account",
             e

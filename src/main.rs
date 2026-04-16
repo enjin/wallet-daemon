@@ -30,6 +30,7 @@ mod platform_client;
 pub mod substrate_client;
 mod transaction;
 mod types;
+mod utils;
 mod wallet;
 mod wallet_loader;
 
@@ -94,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tracing_subscriber::fmt::init();
-    set_multitenant(keypair.clone(), platform_url.clone()).await;
+    set_multitenant(keypair.clone()).await;
 
     let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(keypair.clone());
 

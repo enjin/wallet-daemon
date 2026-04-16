@@ -5,12 +5,11 @@ use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
-use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client};
+use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
 use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
 use payload::RawPayload;
-use reqwest::Response;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -184,30 +183,14 @@ impl TransactionJob {
     async fn get_pending_transactions(
         &self,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res = GetPendingTransactions::build_query(get_pending_transactions::Variables {
-            limit: TRANSACTION_PAGE_SIZE,
-            cursor: None,
-        });
+        let response_data = utils::execute_query::<GetPendingTransactions>(
+            GetPendingTransactions::build_query(get_pending_transactions::Variables {
+                limit: TRANSACTION_PAGE_SIZE,
+                cursor: None,
+            }),
+        )
+        .await?;
 
-        let res = global::graphql_client()
-            .await
-            .post(global::platform_url())
-            .headers(global::headers())
-            .json(&res)
-            .send()
-            .await?;
-
-        self.extract_transaction_requests(res).await
-    }
-
-    async fn extract_transaction_requests(
-        &self,
-        transactions_res: Response,
-    ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let response_body: graphql_client::Response<get_pending_transactions::ResponseData> =
-            transactions_res.json().await?;
-
-        let response_data = response_body.data.ok_or(NO_TRANSACTIONS_MSG)?;
         let transactions_req = response_data.result.ok_or(NO_TRANSACTIONS_MSG)?.data;
 
         if transactions_req.is_empty() {

@@ -6,7 +6,7 @@ use crate::graphql::{
 };
 use crate::substrate_client::EnjinConfig;
 use crate::types::{Chain, MetadataInfo, Network};
-use crate::{SubstrateClient, global};
+use crate::{SubstrateClient, global, utils};
 use graphql_client::GraphQLQuery;
 use hex_literal::hex;
 use parity_scale_codec::Decode;
@@ -21,24 +21,14 @@ pub async fn update_metadata_and_substrate_client(
     network: Network,
     chain: Chain,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let query = GetChainInfo::build_query(get_chain_info::Variables {
-        network: network.into(),
-        chain: chain.into(),
-    });
+    let response_data = utils::execute_query::<GetChainInfo>(GetChainInfo::build_query(
+        get_chain_info::Variables {
+            network: network.into(),
+            chain: chain.into(),
+        },
+    ))
+    .await?;
 
-    let client = global::graphql_client().await;
-
-    let response = client
-        .post(global::platform_url())
-        .headers(global::headers())
-        .json(&query)
-        .send()
-        .await?;
-
-    let response_body: graphql_client::Response<get_chain_info::ResponseData> =
-        response.json().await?;
-
-    let response_data = response_body.data.ok_or("no response data for metadata")?;
     let info = response_data.result.ok_or("no result for metadata")?;
 
     if info.metadata_version > 16 {
@@ -89,26 +79,14 @@ pub async fn get_block_and_spec_version(
     network: Network,
     chain: Chain,
 ) -> Result<(u32, H256, u32), Box<dyn std::error::Error + Send + Sync>> {
-    let query = GetCurrentBlockNumber::build_query(get_current_block_number::Variables {
-        network: network.into(),
-        chain: chain.into(),
-    });
+    let response_data = utils::execute_query::<GetCurrentBlockNumber>(
+        GetCurrentBlockNumber::build_query(get_current_block_number::Variables {
+            network: network.into(),
+            chain: chain.into(),
+        }),
+    )
+    .await?;
 
-    let client = global::graphql_client().await;
-
-    let response = client
-        .post(global::platform_url())
-        .headers(global::headers())
-        .json(&query)
-        .send()
-        .await?;
-
-    let response_body: graphql_client::Response<get_current_block_number::ResponseData> =
-        response.json().await?;
-
-    let response_data = response_body
-        .data
-        .ok_or("no response data for current block")?;
     let info = response_data.result.ok_or("no result for current block")?;
 
     let block_hash = info
@@ -147,25 +125,14 @@ pub async fn get_account_nonce(
     chain: Chain,
     account: &PublicKey,
 ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-    let query = GetAccountNonce::build_query(get_account_nonce::Variables {
-        network: network.into(),
-        chain: chain.into(),
-        address: format!("0x{}", hex::encode(account.0)),
-    });
+    let response_data = utils::execute_query::<GetAccountNonce>(GetAccountNonce::build_query(
+        get_account_nonce::Variables {
+            network: network.into(),
+            chain: chain.into(),
+            address: format!("0x{}", hex::encode(account.0)),
+        },
+    ))
+    .await?;
 
-    let response = global::graphql_client()
-        .await
-        .post(global::platform_url())
-        .headers(global::headers())
-        .json(&query)
-        .send()
-        .await?;
-
-    let response_body: graphql_client::Response<get_account_nonce::ResponseData> =
-        response.json().await?;
-
-    let response_data = response_body
-        .data
-        .ok_or("no response data for current block")?;
     Ok(response_data.result as u64)
 }

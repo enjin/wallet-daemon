@@ -1,8 +1,7 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{GetPendingManagedWalletCreations, get_pending_managed_wallet_creations};
-use crate::{global, platform_client};
+use crate::{platform_client, utils};
 use graphql_client::GraphQLQuery;
-use reqwest::{Client, Response};
 use std::time::Duration;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
@@ -34,21 +33,20 @@ impl TryFrom<get_pending_managed_wallet_creations::GetPendingManagedWalletCreati
 
 #[derive(Debug)]
 pub struct DeriveWalletJob {
-    client: Client,
     sender: Sender<Vec<DeriveWalletRequest>>,
 }
 
 impl DeriveWalletJob {
-    pub fn new(client: Client, sender: Sender<Vec<DeriveWalletRequest>>) -> Self {
-        Self { client, sender }
+    pub fn new(sender: Sender<Vec<DeriveWalletRequest>>) -> Self {
+        Self { sender }
     }
 
     pub fn create_job(keypair: Keypair) -> (DeriveWalletJob, DeriveWalletProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
         (
-            DeriveWalletJob::new(Client::new(), sender),
-            DeriveWalletProcessor::new(Client::new(), keypair, receiver),
+            DeriveWalletJob::new(sender),
+            DeriveWalletProcessor::new(keypair, receiver),
         )
     }
 
@@ -85,32 +83,16 @@ impl DeriveWalletJob {
     async fn get_pending_wallets(
         &self,
     ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res = GetPendingManagedWalletCreations::build_query(
-            get_pending_managed_wallet_creations::Variables {
-                limit: ACCOUNT_PAGE_SIZE,
-                cursor: None,
-            },
-        );
+        let response_data = utils::execute_query::<GetPendingManagedWalletCreations>(
+            GetPendingManagedWalletCreations::build_query(
+                get_pending_managed_wallet_creations::Variables {
+                    limit: ACCOUNT_PAGE_SIZE,
+                    cursor: None,
+                },
+            ),
+        )
+        .await?;
 
-        let res = self
-            .client
-            .post(global::platform_url())
-            .headers(global::headers())
-            .json(&res)
-            .send()
-            .await?;
-
-        self.extract_wallet_requests(res).await
-    }
-
-    async fn extract_wallet_requests(
-        &self,
-        pending_wallets_res: Response,
-    ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let response_body: graphql_client::Response<
-            get_pending_managed_wallet_creations::ResponseData,
-        > = pending_wallets_res.json().await?;
-        let response_data = response_body.data.ok_or("No data in response")?;
         let derive_wallets_req = response_data
             .result
             .ok_or("No pending wallets in response")?;
@@ -131,25 +113,16 @@ impl DeriveWalletJob {
 }
 
 pub struct DeriveWalletProcessor {
-    client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<DeriveWalletRequest>>,
 }
 
 impl DeriveWalletProcessor {
-    pub(crate) fn new(
-        client: Client,
-        keypair: Keypair,
-        receiver: Receiver<Vec<DeriveWalletRequest>>,
-    ) -> Self {
-        Self {
-            client,
-            keypair,
-            receiver,
-        }
+    pub(crate) fn new(keypair: Keypair, receiver: Receiver<Vec<DeriveWalletRequest>>) -> Self {
+        Self { keypair, receiver }
     }
 
-    async fn derive_wallets(client: Client, keypair: Keypair, requests: Vec<DeriveWalletRequest>) {
+    async fn derive_wallets(keypair: Keypair, requests: Vec<DeriveWalletRequest>) {
         let wallets: Vec<_> = requests
             .into_iter()
             .map(|request| {
@@ -175,17 +148,13 @@ impl DeriveWalletProcessor {
             .collect();
 
         if !wallets.is_empty() {
-            platform_client::populate_managed_wallets(client, wallets).await;
+            platform_client::populate_managed_wallets(wallets).await;
         }
     }
 
     async fn launch_job_scheduler(mut self) {
         while let Some(requests) = self.receiver.recv().await {
-            tokio::spawn(Self::derive_wallets(
-                self.client.clone(),
-                self.keypair.clone(),
-                requests,
-            ));
+            tokio::spawn(Self::derive_wallets(self.keypair.clone(), requests));
         }
     }
 
