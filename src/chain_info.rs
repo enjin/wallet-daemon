@@ -7,7 +7,6 @@ use crate::graphql::{
 use crate::substrate_client::EnjinConfig;
 use crate::types::{Chain, MetadataInfo, Network};
 use crate::{SubstrateClient, global, utils};
-use graphql_client::GraphQLQuery;
 use hex_literal::hex;
 use parity_scale_codec::Decode;
 use std::sync::Arc;
@@ -22,10 +21,10 @@ pub async fn update_metadata_and_substrate_client(
     chain: Chain,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let response_data = utils::execute_query::<GetChainInfo>(
-        GetChainInfo::build_query(get_chain_info::Variables {
+        get_chain_info::Variables {
             network: network.into(),
             chain: chain.into(),
-        }),
+        },
         None,
     )
     .await?;
@@ -81,10 +80,10 @@ pub async fn get_block_and_spec_version(
     chain: Chain,
 ) -> Result<(u32, H256, u32), Box<dyn std::error::Error + Send + Sync>> {
     let response_data = utils::execute_query::<GetCurrentBlockNumber>(
-        GetCurrentBlockNumber::build_query(get_current_block_number::Variables {
+        get_current_block_number::Variables {
             network: network.into(),
             chain: chain.into(),
-        }),
+        },
         None,
     )
     .await?;
@@ -128,11 +127,11 @@ pub async fn get_account_nonce(
     account: &PublicKey,
 ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
     let response_data = utils::execute_query::<GetAccountNonce>(
-        GetAccountNonce::build_query(get_account_nonce::Variables {
+        get_account_nonce::Variables {
             network: network.into(),
             chain: chain.into(),
             address: format!("0x{}", hex::encode(account.0)),
-        }),
+        },
         None,
     )
     .await?;

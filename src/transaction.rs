@@ -6,7 +6,6 @@ use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
-use graphql_client::GraphQLQuery;
 use lru::LruCache;
 use parity_scale_codec::Encode;
 use payload::RawPayload;
@@ -184,10 +183,10 @@ impl TransactionJob {
         &self,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
         let response_data = utils::execute_query::<GetPendingTransactions>(
-            GetPendingTransactions::build_query(get_pending_transactions::Variables {
+            get_pending_transactions::Variables {
                 limit: TRANSACTION_PAGE_SIZE,
                 cursor: None,
-            }),
+            },
             None,
         )
         .await?;

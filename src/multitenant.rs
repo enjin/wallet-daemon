@@ -1,6 +1,5 @@
 use crate::graphql::SetDaemonWalletAccount;
 use crate::{graphql, utils};
-use graphql_client::GraphQLQuery;
 use subxt_signer::sr25519::Keypair;
 
 async fn set_daemon_wallet_account(
@@ -9,10 +8,10 @@ async fn set_daemon_wallet_account(
     let message = b"EnjinPlatform.VerifyDaemonWallet";
     let signature = keypair.sign(message);
     let result = utils::execute_query::<SetDaemonWalletAccount>(
-        SetDaemonWalletAccount::build_query(graphql::set_daemon_wallet_account::Variables {
+        graphql::set_daemon_wallet_account::Variables {
             public_key: format!("0x{}", hex::encode(keypair.public_key().0)),
             signed_message: format!("0x{}", hex::encode(signature.0)),
-        }),
+        },
         None,
     )
     .await?;

@@ -1,14 +1,15 @@
 use crate::global;
 use backon::{ExponentialBuilder, Retryable};
 
-pub async fn execute_query<T>(
-    query_body: graphql_client::QueryBody<T::Variables>,
+/// Helper function to execute a graphql query
+pub async fn execute_query<T: graphql_client::GraphQLQuery>(
+    variables: T::Variables,
     retry_strategy: Option<ExponentialBuilder>,
 ) -> Result<T::ResponseData, Box<dyn std::error::Error + Send + Sync>>
 where
-    T: graphql_client::GraphQLQuery,
     T::Variables: serde::Serialize,
 {
+    let query_body = T::build_query(variables);
     // println!("query_body: {:?}", serde_json::to_string(&query_body));
     let client = global::graphql_client().await;
 

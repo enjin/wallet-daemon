@@ -5,7 +5,6 @@ use crate::graphql::{
 };
 use crate::utils;
 use backon::ExponentialBuilder;
-use graphql_client::GraphQLQuery;
 use std::time::Duration;
 
 pub struct PlatformExponentialBuilder();
@@ -24,7 +23,7 @@ pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
     let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
     let res = utils::execute_query::<SignTransactions>(
-        SignTransactions::build_query(sign_transactions::Variables { transactions }),
+        sign_transactions::Variables { transactions },
         Some(PlatformExponentialBuilder::default()),
     )
     .await;
@@ -47,7 +46,7 @@ pub async fn populate_managed_wallets(wallets: Vec<PopulateManagedWalletInput>) 
         .collect();
 
     let res = utils::execute_query::<PopulateManagedWallets>(
-        PopulateManagedWallets::build_query(populate_managed_wallets::Variables { wallets }),
+        populate_managed_wallets::Variables { wallets },
         Some(PlatformExponentialBuilder::default()),
     )
     .await;

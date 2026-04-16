@@ -1,7 +1,6 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{GetPendingManagedWalletCreations, get_pending_managed_wallet_creations};
 use crate::{platform_client, utils};
-use graphql_client::GraphQLQuery;
 use std::time::Duration;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
@@ -84,12 +83,10 @@ impl DeriveWalletJob {
         &self,
     ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
         let response_data = utils::execute_query::<GetPendingManagedWalletCreations>(
-            GetPendingManagedWalletCreations::build_query(
-                get_pending_managed_wallet_creations::Variables {
-                    limit: ACCOUNT_PAGE_SIZE,
-                    cursor: None,
-                },
-            ),
+            get_pending_managed_wallet_creations::Variables {
+                limit: ACCOUNT_PAGE_SIZE,
+                cursor: None,
+            },
             None,
         )
         .await?;
