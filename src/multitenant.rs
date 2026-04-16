@@ -13,6 +13,7 @@ async fn set_daemon_wallet_account(
             public_key: format!("0x{}", hex::encode(keypair.public_key().0)),
             signed_message: format!("0x{}", hex::encode(signature.0)),
         }),
+        None,
     )
     .await?;
     Ok(result.result)

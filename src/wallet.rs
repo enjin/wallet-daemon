@@ -90,6 +90,7 @@ impl DeriveWalletJob {
                     cursor: None,
                 },
             ),
+            None,
         )
         .await?;
 

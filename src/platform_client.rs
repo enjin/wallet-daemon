@@ -23,9 +23,9 @@ impl PlatformExponentialBuilder {
 pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
     let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
-    let res = utils::execute_query_with_retry::<SignTransactions>(
+    let res = utils::execute_query::<SignTransactions>(
         SignTransactions::build_query(sign_transactions::Variables { transactions }),
-        PlatformExponentialBuilder::default(),
+        Some(PlatformExponentialBuilder::default()),
     )
     .await;
 
@@ -46,9 +46,9 @@ pub async fn populate_managed_wallets(wallets: Vec<PopulateManagedWalletInput>) 
         .map(|x| (x.external_id.clone(), x.public_key.clone()))
         .collect();
 
-    let res = utils::execute_query_with_retry::<PopulateManagedWallets>(
+    let res = utils::execute_query::<PopulateManagedWallets>(
         PopulateManagedWallets::build_query(populate_managed_wallets::Variables { wallets }),
-        PlatformExponentialBuilder::default(),
+        Some(PlatformExponentialBuilder::default()),
     )
     .await;
 

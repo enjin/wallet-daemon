@@ -21,12 +21,13 @@ pub async fn update_metadata_and_substrate_client(
     network: Network,
     chain: Chain,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let response_data = utils::execute_query::<GetChainInfo>(GetChainInfo::build_query(
-        get_chain_info::Variables {
+    let response_data = utils::execute_query::<GetChainInfo>(
+        GetChainInfo::build_query(get_chain_info::Variables {
             network: network.into(),
             chain: chain.into(),
-        },
-    ))
+        }),
+        None,
+    )
     .await?;
 
     let info = response_data.result.ok_or("no result for metadata")?;
@@ -84,6 +85,7 @@ pub async fn get_block_and_spec_version(
             network: network.into(),
             chain: chain.into(),
         }),
+        None,
     )
     .await?;
 
@@ -125,13 +127,14 @@ pub async fn get_account_nonce(
     chain: Chain,
     account: &PublicKey,
 ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-    let response_data = utils::execute_query::<GetAccountNonce>(GetAccountNonce::build_query(
-        get_account_nonce::Variables {
+    let response_data = utils::execute_query::<GetAccountNonce>(
+        GetAccountNonce::build_query(get_account_nonce::Variables {
             network: network.into(),
             chain: chain.into(),
             address: format!("0x{}", hex::encode(account.0)),
-        },
-    ))
+        }),
+        None,
+    )
     .await?;
 
     Ok(response_data.result as u64)

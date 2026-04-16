@@ -188,6 +188,7 @@ impl TransactionJob {
                 limit: TRANSACTION_PAGE_SIZE,
                 cursor: None,
             }),
+            None,
         )
         .await?;
 
