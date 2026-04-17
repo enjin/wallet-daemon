@@ -82,7 +82,7 @@ mod payload {
                 Some(x) => x,
                 None => {
                     tracing::error!(
-                        "extinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
+                        "extrinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
                     );
                     return None;
                 }
@@ -122,7 +122,7 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
             request_id: data.uuid,
             network: data.network.try_into()?,
             chain: data.chain.try_into()?,
-            payload: hex::decode(data.encoded_data.split('x').nth(1).unwrap())?,
+            payload: hex::decode(data.encoded_data.split('x').nth(1).ok_or("missing 0x")?)?,
             fuel_tank_signer_external_id: data
                 .should_sign_fuel_tank
                 .then_some(data.fuel_tank_signer_external_id),
@@ -368,9 +368,12 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal_from_unchecked(DUMMY_TX_MORTALITY, block_number.into(), block_hash)
                     .build();
-                let chain_client = global::substrate_client(network, chain)
-                    .await
-                    .expect("client missing");
+                let Some(chain_client) = global::substrate_client(network, chain).await else {
+                    tracing::error!(
+                        "Missing substrate client for network {network:?}, chain {chain:?}"
+                    );
+                    continue;
+                };
                 let client_at_block = chain_client.at_block(block_number).unwrap();
                 let signed_dummy_tx = match client_at_block
                     .tx()
@@ -409,12 +412,19 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal_from_unchecked(TX_MORTALITY, block_number.into(), block_hash)
                     .build();
-                let chain_client = global::substrate_client(network, chain)
-                    .await
-                    .expect("client missing");
-                let client_at_block = chain_client
-                    .at_block(block_number)
-                    .expect("client metadata or spec data missing");
+                let Some(chain_client) = global::substrate_client(network, chain).await else {
+                    tracing::error!(
+                        "Missing substrate client for network {network:?}, chain {chain:?}"
+                    );
+                    continue;
+                };
+                let Ok(client_at_block) = chain_client.at_block(block_number) else {
+                    tracing::error!(
+                        "Client metadata or spec_version missing for network {network:?}, chain {chain:?}"
+                    );
+                    continue;
+                };
+
                 match client_at_block
                     .tx()
                     .create_signable_offline(&payload, params)

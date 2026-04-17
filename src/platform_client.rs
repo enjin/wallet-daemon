@@ -35,7 +35,7 @@ pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
                 tracing::info!("Signed transaction #{}", uuid);
             }
         }
-        Err(e) => tracing::error!("Error sending UpdateTransaction: {:?}", e),
+        Err(e) => tracing::error!("Error sending SignTransactions: {:?}", e),
     }
 }
 

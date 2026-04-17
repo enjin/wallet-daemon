@@ -61,8 +61,8 @@ pub async fn update_metadata_and_substrate_client(
     let client = SubstrateClient::new_with_config(config);
 
     global::insert_metadata(
-        Network::Canary,
-        Chain::Matrix,
+        network,
+        chain,
         MetadataInfo {
             spec_version: info.spec_version as u32,
             metadata: metadata.clone(),

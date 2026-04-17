@@ -1,12 +1,7 @@
-use crate::SubstrateClient;
-use hex_literal::hex;
-use parity_scale_codec::Decode;
 use std::fmt::Debug;
-use std::sync::Arc;
 use subxt::config::DefaultTransactionExtensions;
-use subxt::config::substrate::SpecVersionForRange;
 use subxt::utils::H256;
-use subxt::{Config, Metadata, PolkadotConfig, SubstrateConfig};
+use subxt::{Config, PolkadotConfig, SubstrateConfig};
 
 #[derive(Debug, Clone)]
 pub struct EnjinConfig {
@@ -14,7 +9,7 @@ pub struct EnjinConfig {
     pub config: SubstrateConfig,
 }
 
-// TODO: only use these if the default doesn't work
+// if there is a problem in the future, consider using enjin tx extension
 // type EnjinTxExtensions<T> = (
 //     transaction_extensions::VerifySignature<T>,
 //     transaction_extensions::CheckSpecVersion,
@@ -59,36 +54,4 @@ impl Config for EnjinConfig {
         self.config
             .spec_and_transaction_version_for_block_number(block_number)
     }
-}
-
-pub async fn setup_client() -> Arc<SubstrateClient> {
-    let spec_version = 1031;
-    let ranges = vec![SpecVersionForRange {
-        block_range: 0..u64::MAX,
-        spec_version,
-        transaction_version: 12,
-    }];
-
-    let metadata_bytes = hex!("");
-
-    let option: Option<Vec<u8>> = Decode::decode(&mut &metadata_bytes[..]).unwrap();
-    let metadata_bytes = option.ok_or("No metadata returned").unwrap();
-
-    let metadata = Arc::new(Metadata::decode_from(&metadata_bytes).unwrap());
-
-    let genesis_hash = H256::from(hex!(
-        "91b171bb158e2d3848fa23a9f1c25182fb8e20313b2c1eb49219da7a70ce90c3"
-    ));
-    let config = SubstrateConfig::builder()
-        .set_spec_version_for_block_ranges(ranges)
-        .set_metadata_for_spec_versions([(spec_version, metadata)])
-        .set_genesis_hash(genesis_hash)
-        .build();
-    let config = EnjinConfig {
-        genesis_hash,
-        config,
-    };
-    let client = SubstrateClient::new_with_config(config);
-
-    Arc::new(client)
 }

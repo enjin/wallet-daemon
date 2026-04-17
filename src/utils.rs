@@ -13,7 +13,9 @@ where
     T::ResponseData: Debug,
 {
     let query_body = T::build_query(variables);
-    tracing::info!("Request Body: {:?}", serde_json::to_string(&query_body));
+    if let Ok(json) = serde_json::to_string(&query_body) {
+        tracing::info!("Request Body: {json}");
+    }
     let client = global::graphql_client().await;
 
     let response = if let Some(strategy) = retry_strategy {
@@ -37,9 +39,13 @@ where
     };
     if response.status() == StatusCode::OK {
         let response_body: graphql_client::Response<T::ResponseData> = response.json().await?;
-        tracing::info!("Response Body: {response_body:?}");
         response_body.data.ok_or("no response data".into())
     } else {
-        Err(format!("response not ok: {:?}", response).into())
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|err| format!("failed to read response body: {err}"));
+        Err(format!("response not ok: status={status}, body={body}").into())
     }
 }

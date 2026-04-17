@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 /// Stores metadata, spec_version, and client
 static METADATA: LazyLock<RwLock<HashMap<(Network, Chain), MetadataInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
-/// The qraphql client that fetches chain info
+/// The graphql client that fetches chain info
 static GRAPHQL_CLIENT: LazyLock<RwLock<reqwest::Client>> =
     LazyLock::new(|| RwLock::new(reqwest::Client::new()));
 
