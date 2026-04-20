@@ -14,7 +14,7 @@ where
 {
     let query_body = T::build_query(variables);
     if let Ok(json) = serde_json::to_string(&query_body) {
-        tracing::info!("Request Body: {json}");
+        tracing::debug!("Request Body: {json}");
     }
     let client = global::graphql_client().await;
 
@@ -39,6 +39,7 @@ where
     };
     if response.status() == StatusCode::OK {
         let response_body: graphql_client::Response<T::ResponseData> = response.json().await?;
+        tracing::debug!("Response Body: {response_body:?}");
         response_body.data.ok_or("no response data".into())
     } else {
         let status = response.status();
