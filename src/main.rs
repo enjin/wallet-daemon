@@ -2,6 +2,7 @@
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
@@ -41,11 +42,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !seed_path.exists() {
         panic!("SEED_PATH does not exist: {:?}", seed_path)
     };
+
+    // priority for loading is: direct file, wallet.seed, files that starts with 73723235
     let seed_path = if seed_path.is_dir() {
-        seed_path.join("wallet.seed")
+        let wallet_seed_path = seed_path.join("wallet.seed");
+        if wallet_seed_path.exists() {
+            wallet_seed_path
+        } else {
+            // find files that start with 73723235 and are 72 characters long
+            let mut backup_seed_path = None;
+            if let Ok(entries) = fs::read_dir(&seed_path) {
+                for entry in entries.flatten() {
+                    if let Some(name) = entry.file_name().to_str()
+                        && name.starts_with("73723235")
+                        && name.len() == 72
+                    {
+                        backup_seed_path = Some(entry.path());
+                        break;
+                    }
+                }
+            }
+            backup_seed_path.unwrap_or(wallet_seed_path)
+        }
     } else {
         seed_path
     };
+    println!("loading seed from path: {}", seed_path.display());
 
     let args: Vec<String> = env::args().skip(1).collect();
     if let Some(arg) = args.first()
