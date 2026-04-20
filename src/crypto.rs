@@ -21,6 +21,8 @@ struct EncryptedData {
     #[serde(skip_serializing_if = "Option::is_none")]
     nonce: Option<String>,
     data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    imported: Option<bool>,
 }
 
 fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], String> {
@@ -71,6 +73,10 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 pub fn encrypt(plaintext: &str, password: &str) -> String {
+    encrypt_with_imported(plaintext, password, false)
+}
+
+pub fn encrypt_with_imported(plaintext: &str, password: &str, imported: bool) -> String {
     let mut salt = [0u8; SALT_LEN];
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rng().fill_bytes(&mut salt);
@@ -89,6 +95,7 @@ pub fn encrypt(plaintext: &str, password: &str) -> String {
         salt: Some(hex::encode(salt)),
         nonce: Some(hex::encode(nonce_bytes)),
         data: hex::encode(ciphertext),
+        imported: Some(imported),
     };
 
     serde_json::to_string(&encrypted).expect("serialization failed")
@@ -119,7 +126,14 @@ pub fn decrypt(encrypted_json: &str, password: &str) -> Result<String, String> {
                 .decrypt(nonce, ciphertext.as_ref())
                 .map_err(|_| "Decryption failed - wrong password?")?;
 
-            String::from_utf8(plaintext).map_err(|e| format!("Invalid UTF-8: {}", e))
+            let result =
+                String::from_utf8(plaintext).map_err(|e| format!("Invalid UTF-8: {}", e))?;
+
+            if encrypted.imported.unwrap_or(false) {
+                Ok(format!("{}///{}", result, password))
+            } else {
+                Ok(result)
+            }
         }
         _ => Err(format!("Unknown version: {}", encrypted.version)),
     }

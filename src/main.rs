@@ -2,7 +2,6 @@
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 use std::process::exit;
 use std::str::FromStr;
@@ -13,7 +12,7 @@ use crate::multitenant::set_multitenant;
 use crate::substrate_client::EnjinConfig;
 use crate::transaction::TransactionJob;
 use crate::wallet::DeriveWalletJob;
-use crate::wallet_loader::load_wallet;
+use crate::wallet_loader::load_seed;
 
 pub type SubstrateClient = OfflineClient<EnjinConfig>;
 
@@ -37,37 +36,9 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
     let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
-    let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
-    if !seed_path.exists() {
-        panic!("SEED_PATH does not exist: {:?}", seed_path)
-    };
-
-    // priority for loading is: direct file, wallet.seed, files that starts with 73723235
-    let seed_path = if seed_path.is_dir() {
-        let wallet_seed_path = seed_path.join("wallet.seed");
-        if wallet_seed_path.exists() {
-            wallet_seed_path
-        } else {
-            // find files that start with 73723235 and are 72 characters long
-            let mut backup_seed_path = None;
-            if let Ok(entries) = fs::read_dir(&seed_path) {
-                for entry in entries.flatten() {
-                    if let Some(name) = entry.file_name().to_str()
-                        && name.starts_with("73723235")
-                        && name.len() == 72
-                    {
-                        backup_seed_path = Some(entry.path());
-                        break;
-                    }
-                }
-            }
-            backup_seed_path.unwrap_or(wallet_seed_path)
-        }
-    } else {
-        seed_path
-    };
-    println!("loading seed from path: {}", seed_path.display());
+    let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
 
     let args: Vec<String> = env::args().skip(1).collect();
     if let Some(arg) = args.first()
@@ -75,16 +46,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         println!("Enjin Platform - Import Wallet");
         let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
-        let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
+        let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
         write_seed(seed, &seed_path, &key_pass).expect("Failed to import your wallet");
 
         exit(1);
     }
 
-    let keypair = {
-        let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
-        load_wallet(&seed_path, &key_pass)
-    };
+    let keypair = load_seed(&seed_path, &key_pass);
 
     let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
     global::PLATFORM_URL
@@ -116,7 +84,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("platform token already set");
     }
 
-    tracing_subscriber::fmt::init();
     set_multitenant(keypair.clone()).await;
 
     let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(keypair.clone());
