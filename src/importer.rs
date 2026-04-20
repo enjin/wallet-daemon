@@ -3,8 +3,8 @@ use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
+use subxt_signer::SecretUri;
 use subxt_signer::sr25519::Keypair;
-use subxt_signer::{ExposeSecret, SecretUri};
 
 pub fn write_seed(seed: String, seed_path: &Path, key_pass: &str) -> std::io::Result<()> {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -14,10 +14,10 @@ pub fn write_seed(seed: String, seed_path: &Path, key_pass: &str) -> std::io::Re
         base_path.join(seed_path)
     };
 
-    let uri = SecretUri::from_str(&seed).expect("valid URI");
+    let secret_with_pass = format!("{}///{}", seed, key_pass);
+    let uri = SecretUri::from_str(&secret_with_pass).expect("valid URI");
     let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
-
-    let encrypted_mnemonic = crypto::encrypt(uri.phrase.expose_secret(), key_pass);
+    let encrypted_mnemonic = crypto::encrypt(&secret_with_pass, key_pass);
 
     let final_path = if path.is_dir() {
         path.join(format!(

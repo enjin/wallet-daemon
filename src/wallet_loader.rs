@@ -15,7 +15,7 @@ fn decrypt_mnemonic(content: &str) -> String {
         .trim_matches('\r')
         .to_string();
 
-    if crypto::is_encrypted(&stripped) {
+    if crypto::is_encrypted_v2(&stripped) {
         panic!("Encrypted seed files require KEY_PASS for decryption")
     }
 
@@ -33,13 +33,17 @@ fn get_keys(seed_path: &Path, key_pass: &str) -> Keypair {
     if path.is_file() {
         let content = fs::read_to_string(&path).expect("Unable to read file");
 
-        let decrypted = if crypto::is_encrypted(&content) {
+        let decrypted = if crypto::is_encrypted_v2(&content) {
             crypto::decrypt(&content, key_pass).expect("Failed to decrypt seed")
         } else {
             decrypt_mnemonic(&content)
         };
 
-        let secret = format!("{}///{}", decrypted, key_pass);
+        let secret = if crypto::is_encrypted_v2(&content) {
+            decrypted
+        } else {
+            format!("{}///{}", decrypted, key_pass)
+        };
         let uri = SecretUri::from_str(&secret).expect("valid URI");
         return Keypair::from_uri(&uri).expect("valid keypair");
     }
@@ -53,7 +57,7 @@ fn get_keys(seed_path: &Path, key_pass: &str) -> Keypair {
 
             let content = fs::read_to_string(entry.path()).expect("Unable to read file");
 
-            let decrypted = if crypto::is_encrypted(&content) {
+            let decrypted = if crypto::is_encrypted_v2(&content) {
                 crypto::decrypt(&content, key_pass).unwrap_or_else(|_| {
                     content
                         .strip_suffix("\r\n")
@@ -65,7 +69,11 @@ fn get_keys(seed_path: &Path, key_pass: &str) -> Keypair {
                 decrypt_mnemonic(&content)
             };
 
-            let secret = format!("{}///{}", decrypted, key_pass);
+            let secret = if crypto::is_encrypted_v2(&content) {
+                decrypted
+            } else {
+                format!("{}///{}", decrypted, key_pass)
+            };
 
             let uri = SecretUri::from_str(&secret).expect("valid URI");
             let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
@@ -82,9 +90,7 @@ fn get_keys(seed_path: &Path, key_pass: &str) -> Keypair {
 
     let mnemonic = Mnemonic::generate(12).unwrap().to_string();
     let encrypted_mnemonic = crypto::encrypt(&mnemonic, key_pass);
-
-    let secret = format!("{}///{}", mnemonic, key_pass);
-    let uri = SecretUri::from_str(&secret).expect("valid URI");
+    let uri = SecretUri::from_str(&mnemonic).expect("valid URI");
     let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
 
     fs::write(&path, encrypted_mnemonic).expect("Unable to write file");

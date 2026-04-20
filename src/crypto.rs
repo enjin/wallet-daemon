@@ -125,7 +125,7 @@ pub fn decrypt(encrypted_json: &str, password: &str) -> Result<String, String> {
     }
 }
 
-pub fn is_encrypted(data: &str) -> bool {
+pub fn is_encrypted_v2(data: &str) -> bool {
     if let Ok(encrypted) = serde_json::from_str::<EncryptedData>(data) {
         encrypted.version == VERSION_V2
     } else {
@@ -167,8 +167,8 @@ mod tests {
 
         let encrypted = encrypt(plaintext, password);
 
-        assert!(is_encrypted(&encrypted));
-        assert!(!is_encrypted(plaintext));
+        assert!(is_encrypted_v2(&encrypted));
+        assert!(!is_encrypted_v2(plaintext));
     }
 
     #[test]
@@ -205,13 +205,13 @@ mod tests {
     fn test_plain_text_not_detected_as_encrypted() {
         let plain_mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
-        assert!(!is_encrypted(plain_mnemonic));
+        assert!(!is_encrypted_v2(plain_mnemonic));
 
         let quoted = format!("\"{}\"", plain_mnemonic);
-        assert!(!is_encrypted(&quoted));
+        assert!(!is_encrypted_v2(&quoted));
 
         let with_newline = format!("{}\n", plain_mnemonic);
-        assert!(!is_encrypted(&with_newline));
+        assert!(!is_encrypted_v2(&with_newline));
     }
 
     #[test]
@@ -222,5 +222,58 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("Invalid JSON") || err.contains("V1 format"));
+    }
+
+    #[test]
+    fn test_v1_to_v2_migration_with_password_suffix() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let key_pass = "test_password";
+
+        let secret_with_pass = format!("{}///{}", mnemonic, key_pass);
+        let encrypted = encrypt(&secret_with_pass, key_pass);
+
+        assert!(is_encrypted_v2(&encrypted));
+
+        let decrypted = decrypt(&encrypted, key_pass).expect("decryption failed");
+        assert_eq!(decrypted, secret_with_pass);
+    }
+
+    #[test]
+    fn test_v2_seed_without_password_suffix() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let key_pass = "test_password";
+
+        let encrypted = encrypt(mnemonic, key_pass);
+
+        assert!(is_encrypted_v2(&encrypted));
+
+        let decrypted = decrypt(&encrypted, key_pass).expect("decryption failed");
+        assert_eq!(decrypted, mnemonic);
+        assert!(!decrypted.contains("///"));
+    }
+
+    #[test]
+    fn test_v1_migration_preserves_public_key() {
+        use std::str::FromStr;
+        use subxt_signer::SecretUri;
+        use subxt_signer::sr25519::Keypair;
+
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let key_pass = "test_password";
+
+        let old_uri =
+            SecretUri::from_str(&format!("{}///{}", mnemonic, key_pass)).expect("valid URI");
+        let old_keypair = Keypair::from_uri(&old_uri).expect("valid keypair");
+        let old_public_key = old_keypair.public_key();
+
+        let secret_with_pass = format!("{}///{}", mnemonic, key_pass);
+        let encrypted = encrypt(&secret_with_pass, key_pass);
+
+        let decrypted = decrypt(&encrypted, key_pass).expect("decryption failed");
+        let new_uri = SecretUri::from_str(&decrypted).expect("valid URI");
+        let new_keypair = Keypair::from_uri(&new_uri).expect("valid keypair");
+        let new_public_key = new_keypair.public_key();
+
+        assert_eq!(old_public_key.0, new_public_key.0);
     }
 }
