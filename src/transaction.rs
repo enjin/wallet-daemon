@@ -158,6 +158,7 @@ impl TransactionJob {
     async fn start_polling(&self) {
         let mut interval = interval(Duration::from_millis(TRANSACTION_POLLER_MS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut no_transaction_count = 0;
 
         loop {
             interval.tick().await;
@@ -167,10 +168,14 @@ impl TransactionJob {
                     if let Err(e) = self.sender.try_send(transaction_reqs) {
                         tracing::info!("Error sending transaction requests: {:?}", e);
                     }
+                    no_transaction_count = 0;
                 }
                 Err(e) => {
                     if e.to_string() == NO_TRANSACTIONS_MSG {
-                        tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
+                        if no_transaction_count % 10 == 0 {
+                            tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
+                        }
+                        no_transaction_count += 1;
                     } else {
                         tracing::error!("Error: {:?}", e);
                     }
@@ -301,7 +306,7 @@ impl TransactionProcessor {
                 let latest_nonce = tracker.get(&public_key).unwrap_or(&0u64);
                 correct_nonce = *latest_nonce.max(&chain_nonce);
                 let acc_format = trim_account(public_key.clone());
-                tracing::warn!(
+                tracing::info!(
                     "Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}",
                     correct_nonce + 1
                 );

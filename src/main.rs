@@ -1,18 +1,19 @@
 #![allow(missing_docs, long_running_const_eval, clippy::too_many_arguments)]
 
-use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
-use std::env;
-use std::path::PathBuf;
-use std::process::exit;
-use std::str::FromStr;
-use subxt::OfflineClient;
-
 use crate::importer::write_seed;
 use crate::multitenant::set_multitenant;
 use crate::substrate_client::EnjinConfig;
 use crate::transaction::TransactionJob;
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::load_seed;
+use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
+use std::env;
+use std::path::PathBuf;
+use std::process::exit;
+use std::str::FromStr;
+use subxt::OfflineClient;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::util::SubscriberInitExt;
 
 pub type SubstrateClient = OfflineClient<EnjinConfig>;
 
@@ -36,7 +37,13 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    // init logging
+    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(log_filter))
+        .finish()
+        .try_init()?;
+
     let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
     let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
 
