@@ -124,8 +124,16 @@ pub fn load_wallet(seed_path: &Path, key_pass: &str, print_log: bool) -> Keypair
     if print_log {
         println!("******************* Enjin Wallet Daemon v{version} *******************");
         println!(
+            "** Enjin Relaychain   (SS58): {}",
+            account_id.to_ss58check_with_version(Ss58AddressFormat::custom(2135))
+        );
+        println!(
             "** Enjin Matrixchain  (SS58): {}",
             account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
+        );
+        println!(
+            "** Canary Relaychain  (SS58): {}",
+            account_id.to_ss58check_with_version(Ss58AddressFormat::custom(69))
         );
         println!(
             "** Canary Matrixchain (SS58): {}",
