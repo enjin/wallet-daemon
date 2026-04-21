@@ -67,6 +67,8 @@ type PendingTransaction {
   uuid: String!
   encodedData: String!
   wallet: ManagedWallet!
+  network: Network!
+  chain: Chain!
   shouldSignFuelTank: Boolean!
   fuelTankSignerExternalId: String
 }
@@ -81,6 +83,15 @@ type PendingTransactionCursorPagination {
 type ManagedWallet {
   publicKey: String
   externalId: String
+}
+
+type ChainInfo {
+  currentBlockNumber: Int!
+  currentBlockHash: String!
+  specVersion: Int!
+  transactionVersion: Int!
+  metadataVersion: Int!
+  metadata: String!
 }
 
 type ManagedWalletCursorPagination {
@@ -103,8 +114,10 @@ input SignTransactionInput {
 }
 
 type Query {
-  GetPendingTransactions(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): PendingTransactionCursorPagination
-  GetPendingManagedWalletCreations(network: Network!, chain: Chain!, limit: Int = 25, cursor: String): ManagedWalletCursorPagination
+  GetAccountNonce(network: Network!, chain: Chain!, address: String!): Int!
+  GetChainInfo(network: Network!, chain: Chain!): ChainInfo
+  GetPendingTransactions(limit: Int = 25, cursor: String): PendingTransactionCursorPagination
+  GetPendingManagedWalletCreations(limit: Int = 25, cursor: String): ManagedWalletCursorPagination
 }
 
 type Mutation {

@@ -1,11 +1,9 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
-use crate::graphql::{get_pending_managed_wallet_creations, GetPendingManagedWalletCreations};
-use crate::platform_client;
-use graphql_client::GraphQLQuery;
-use reqwest::{Client, Response};
+use crate::graphql::{GetPendingManagedWalletCreations, get_pending_managed_wallet_creations};
+use crate::{platform_client, utils};
 use std::time::Duration;
-use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
+use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -34,48 +32,20 @@ impl TryFrom<get_pending_managed_wallet_creations::GetPendingManagedWalletCreati
 
 #[derive(Debug)]
 pub struct DeriveWalletJob {
-    client: Client,
     sender: Sender<Vec<DeriveWalletRequest>>,
-    platform_url: String,
-    platform_token: String,
 }
 
 impl DeriveWalletJob {
-    pub fn new(
-        client: Client,
-        sender: Sender<Vec<DeriveWalletRequest>>,
-        platform_url: String,
-        platform_token: String,
-    ) -> Self {
-        Self {
-            client,
-            sender,
-            platform_url,
-            platform_token,
-        }
+    pub fn new(sender: Sender<Vec<DeriveWalletRequest>>) -> Self {
+        Self { sender }
     }
 
-    pub fn create_job(
-        keypair: Keypair,
-        platform_url: String,
-        platform_token: String,
-    ) -> (DeriveWalletJob, DeriveWalletProcessor) {
+    pub fn create_job(keypair: Keypair) -> (DeriveWalletJob, DeriveWalletProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
 
         (
-            DeriveWalletJob::new(
-                Client::new(),
-                sender,
-                platform_url.clone(),
-                platform_token.clone(),
-            ),
-            DeriveWalletProcessor::new(
-                Client::new(),
-                keypair,
-                receiver,
-                platform_url,
-                platform_token,
-            ),
+            DeriveWalletJob::new(sender),
+            DeriveWalletProcessor::new(keypair, receiver),
         )
     }
 
@@ -112,35 +82,15 @@ impl DeriveWalletJob {
     async fn get_pending_wallets(
         &self,
     ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res = GetPendingManagedWalletCreations::build_query(
+        let response_data = utils::execute_query::<GetPendingManagedWalletCreations>(
             get_pending_managed_wallet_creations::Variables {
-                // TODO: get these from the config
-                network: crate::NETWORK.into(),
-                chain: crate::CHAIN.into(),
                 limit: ACCOUNT_PAGE_SIZE,
                 cursor: None,
             },
-        );
+            None,
+        )
+        .await?;
 
-        let res = self
-            .client
-            .post(&self.platform_url)
-            .header("Authorization", &self.platform_token)
-            .json(&res)
-            .send()
-            .await?;
-
-        self.extract_wallet_requests(res).await
-    }
-
-    async fn extract_wallet_requests(
-        &self,
-        pending_wallets_res: Response,
-    ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let response_body: graphql_client::Response<
-            get_pending_managed_wallet_creations::ResponseData,
-        > = pending_wallets_res.json().await?;
-        let response_data = response_body.data.ok_or("No data in response")?;
         let derive_wallets_req = response_data
             .result
             .ok_or("No pending wallets in response")?;
@@ -161,39 +111,16 @@ impl DeriveWalletJob {
 }
 
 pub struct DeriveWalletProcessor {
-    client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<DeriveWalletRequest>>,
-    platform_url: String,
-    platform_token: String,
 }
 
 impl DeriveWalletProcessor {
-    pub(crate) fn new(
-        client: Client,
-        keypair: Keypair,
-        receiver: Receiver<Vec<DeriveWalletRequest>>,
-        platform_url: String,
-        platform_token: String,
-    ) -> Self {
-        Self {
-            client,
-            keypair,
-            receiver,
-            platform_url,
-            platform_token,
-        }
+    pub(crate) fn new(keypair: Keypair, receiver: Receiver<Vec<DeriveWalletRequest>>) -> Self {
+        Self { keypair, receiver }
     }
 
-    async fn derive_wallets(
-        client: Client,
-        keypair: Keypair,
-        platform_url: String,
-        platform_token: String,
-        requests: Vec<DeriveWalletRequest>,
-    ) {
-        // DeriveWalletRequest { external_id }: DeriveWalletRequest,
-
+    async fn derive_wallets(keypair: Keypair, requests: Vec<DeriveWalletRequest>) {
         let wallets: Vec<_> = requests
             .into_iter()
             .map(|request| {
@@ -219,25 +146,13 @@ impl DeriveWalletProcessor {
             .collect();
 
         if !wallets.is_empty() {
-            platform_client::populate_managed_wallets(
-                client,
-                platform_url,
-                platform_token,
-                wallets,
-            )
-            .await;
+            platform_client::populate_managed_wallets(wallets).await;
         }
     }
 
     async fn launch_job_scheduler(mut self) {
         while let Some(requests) = self.receiver.recv().await {
-            tokio::spawn(Self::derive_wallets(
-                self.client.clone(),
-                self.keypair.clone(),
-                self.platform_url.clone(),
-                self.platform_token.clone(),
-                requests,
-            ));
+            tokio::spawn(Self::derive_wallets(self.keypair.clone(), requests));
         }
     }
 

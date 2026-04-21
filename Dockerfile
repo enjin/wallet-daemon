@@ -1,6 +1,6 @@
 # ===== FIRST STAGE ======
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.95-bookworm AS builder
 LABEL description="This is the build stage for the wallet. Here we create the binary."
 
 RUN apt-get update && apt-get install -y pkg-config && rm -rf /var/lib/apt/lists/*

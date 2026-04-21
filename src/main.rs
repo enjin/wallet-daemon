@@ -1,95 +1,105 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, long_running_const_eval, clippy::too_many_arguments)]
+
+use crate::importer::write_seed;
+use crate::multitenant::set_multitenant;
+use crate::substrate_client::EnjinConfig;
+use crate::transaction::TransactionJob;
+use crate::wallet::DeriveWalletJob;
+use crate::wallet_loader::load_seed;
+use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
 use std::env;
+use std::path::PathBuf;
 use std::process::exit;
-use std::sync::Arc;
-use std::time::Duration;
-use subxt::backend::rpc::reconnecting_rpc_client::{ExponentialBackoff, RpcClient};
-use subxt::{OnlineClient, PolkadotConfig};
-use wallet_daemon::config_loader::{load_config, load_wallet};
-use wallet_daemon::{
-    set_multitenant, write_seed, DeriveWalletJob, SubscriptionJob, SubscriptionParams,
-    TransactionJob,
-};
+use std::str::FromStr;
+use subxt::OfflineClient;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::util::SubscriberInitExt;
 
-async fn setup_client(
-    url: &str,
-) -> (
-    Arc<OnlineClient<PolkadotConfig>>,
-    SubscriptionJob,
-    Arc<SubscriptionParams>,
-) {
-    let rpc_client = RpcClient::builder()
-        .retry_policy(
-            ExponentialBackoff::from_millis(100)
-                .max_delay(Duration::from_secs(10))
-                .take(3),
-        )
-        .build(url.to_string())
-        .await
-        .unwrap();
+pub type SubstrateClient = OfflineClient<EnjinConfig>;
 
-    let online_client = OnlineClient::<PolkadotConfig>::from_rpc_client(rpc_client)
-        .await
-        .unwrap();
+pub const DEFAULT_PLATFORM_URL: &str = "https://platform.enjin.io/graphql/daemon";
+pub const TX_MORTALITY: u64 = 64;
+pub const DUMMY_TX_MORTALITY: u64 = 14_400;
 
-    let runtime_updater = online_client.updater();
-    tokio::spawn(async move {
-        let _ = runtime_updater.perform_runtime_updates().await;
-    });
-
-    let client = Arc::new(online_client);
-    let subscription = SubscriptionJob::create_job(Arc::clone(&client));
-    let sub_params = subscription.get_params();
-
-    (client, subscription, sub_params)
-}
+mod chain_info;
+mod crypto;
+mod global;
+mod graphql;
+mod importer;
+mod multitenant;
+mod platform_client;
+pub mod substrate_client;
+mod transaction;
+mod types;
+mod utils;
+mod wallet;
+mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if let Some(arg) = args.first() {
-        if arg == "import" {
-            println!("Enjin Platform - Import Wallet");
-            let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
-            write_seed(seed).expect("Failed to import your wallet");
+    // init logging
+    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(log_filter))
+        .finish()
+        .try_init()?;
 
-            exit(1);
-        }
+    let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
+    let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
+
+    let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(arg) = args.first()
+        && arg == "import"
+    {
+        println!("Enjin Platform - Import Wallet");
+        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
+        let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
+        write_seed(seed, &seed_path, &key_pass).expect("Failed to import your wallet");
+
+        exit(1);
     }
 
-    let (keypair, matrix_url, platform_url, platform_token) =
-        load_wallet(load_config()).await;
+    let keypair = load_seed(&seed_path, &key_pass);
 
-    tracing_subscriber::fmt::init();
-    // Check if we are connecting to a multitenant platform
-    set_multitenant(
-        keypair.clone(),
-        platform_url.clone(),
-        platform_token.clone(),
-    )
-    .await;
-    // Setup matrix client and parameters
-    let (matrix_client, matrix_subscription, matrix_sub_params) = setup_client(&matrix_url).await;
+    let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
+    global::PLATFORM_URL
+        .set(platform_url.clone())
+        .expect("platform url already set");
+    println!("** Platform URL: {}", platform_url);
+    println!("*****************************************************************");
 
-    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(
-        Arc::clone(&matrix_client),
-        Arc::clone(&matrix_sub_params),
-        keypair.clone(),
-        platform_url.clone(),
-        platform_token.clone(),
-    );
+    // set up headers
+    {
+        let platform_key = dotenvy::var("PLATFORM_KEY").expect("PLATFORM_KEY env var is required");
+        let platform_token = format!("Bearer {}", platform_key);
 
-    let (wallet_poller, wallet_processor) =
-        DeriveWalletJob::create_job(keypair, platform_url, platform_token);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            platform_token
+                .parse()
+                .expect("could not parse Authorization header"),
+        );
+        headers.insert(
+            USER_AGENT,
+            format!("Enjin-Wallet-Daemon/{}", env!("CARGO_PKG_VERSION"))
+                .parse()
+                .expect("could not parse User-Agent header"),
+        );
+        global::HEADERS
+            .set(headers)
+            .expect("platform token already set");
+    }
+
+    set_multitenant(keypair.clone()).await;
+
+    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(keypair.clone());
+
+    let (wallet_poller, wallet_processor) = DeriveWalletJob::create_job(keypair);
 
     tokio::select! {
-        m = matrix_subscription.start() => {
-            let err = m.unwrap_err();
-            tracing::error!("Subscription job failed: {:?}", err);
-        }
-
         _ = matrix_tx_poller.start() => {}
-        _ =  matrix_tx_processor.start() => {}
+        _ = matrix_tx_processor.start() => {}
         _ = wallet_poller.start() => {}
         _ = wallet_processor.start() => {}
     }

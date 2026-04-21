@@ -1,7 +1,5 @@
-query GetPendingTransactions($network: Network!, $chain: Chain!, $limit: Int! = 25, $cursor: String) {
+query GetPendingTransactions($limit: Int! = 25, $cursor: String) {
   result: GetPendingTransactions(
-    network: $network
-    chain: $chain
     limit: $limit
     cursor: $cursor
   ) {
@@ -11,6 +9,8 @@ query GetPendingTransactions($network: Network!, $chain: Chain!, $limit: Int! = 
       }
       uuid
       encodedData
+      network
+      chain
       shouldSignFuelTank
       fuelTankSignerExternalId
     }

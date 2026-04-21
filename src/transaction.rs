@@ -1,21 +1,20 @@
 mod fuel_tank;
 
 use crate::graphql::sign_transactions::SignTransactionInput;
-use crate::graphql::{get_pending_transactions, GetPendingTransactions};
-use crate::subscription::Network;
+use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::transaction::fuel_tank::ExpirableSignature;
-use crate::{platform_client, SubscriptionParams, DUMMY_TX_MORTALITY, TX_MORTALITY};
-use graphql_client::GraphQLQuery;
+use crate::transaction::payload::RawFields;
+use crate::types::{Chain, Network};
+use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
 use lru::LruCache;
 use parity_scale_codec::Encode;
-use reqwest::{Client, Response};
+use payload::RawPayload;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
-use subxt::{OnlineClient, PolkadotConfig};
-use subxt_signer::sr25519::Keypair;
 use subxt_signer::DeriveJunction;
+use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
@@ -24,16 +23,77 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
-struct Wrapper(Vec<u8>);
+mod payload {
+    use crate::global;
+    use crate::types::{Chain, Network};
+    use scale_encode::{EncodeAsFields, FieldIter, TypeResolver};
 
-impl subxt::tx::Payload for Wrapper {
-    fn encode_call_data_to(
-        &self,
-        _metadata: &subxt::Metadata,
-        out: &mut Vec<u8>,
-    ) -> Result<(), subxt::ext::subxt_core::Error> {
-        out.extend_from_slice(&self.0);
-        Ok(())
+    use subxt::error::EncodeError;
+    use subxt::transactions::Payload;
+
+    pub type Bytes = Vec<u8>;
+
+    pub struct RawPayload {
+        pub pallet_name: String,
+        pub call_name: String,
+        pub field_bytes: RawFields,
+    }
+
+    pub struct RawFields(pub Bytes);
+
+    impl EncodeAsFields for RawFields {
+        fn encode_as_fields_to<R: TypeResolver>(
+            &self,
+            _fields: &mut dyn FieldIter<'_, R::TypeId>,
+            _types: &R,
+            out: &mut Bytes,
+        ) -> Result<(), EncodeError> {
+            out.extend_from_slice(&self.0);
+            Ok(())
+        }
+    }
+
+    impl Payload for RawPayload {
+        type CallData = RawFields;
+
+        fn pallet_name(&self) -> &str {
+            &self.pallet_name
+        }
+        fn call_name(&self) -> &str {
+            &self.call_name
+        }
+        fn call_data(&self) -> &RawFields {
+            &self.field_bytes
+        }
+    }
+
+    impl RawPayload {
+        pub async fn from_bytes(network: Network, chain: Chain, bytes: &[u8]) -> Option<Self> {
+            let pallet_index = bytes.first()?;
+            let call_index = bytes.get(1)?;
+            let (pallet_name, call_name) = match global::metadata_names(
+                network,
+                chain,
+                *pallet_index,
+                *call_index,
+            )
+            .await
+            {
+                Some(x) => x,
+                None => {
+                    tracing::error!(
+                        "extrinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
+                    );
+                    return None;
+                }
+            };
+
+            Some(Self {
+                pallet_name,
+                call_name,
+                field_bytes: RawFields(bytes[2..].to_vec()),
+            })
+        }
     }
 }
 
@@ -41,6 +101,8 @@ impl subxt::tx::Payload for Wrapper {
 pub struct TransactionRequest {
     request_id: String,
     external_id: Option<String>,
+    network: Network,
+    chain: Chain,
     payload: Vec<u8>,
     /// If this is Some, the extrinsic is a dispatch from fuel tanks and needs the signature added
     pub fuel_tank_signer_external_id: Option<Option<String>>,
@@ -58,7 +120,9 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
         Ok(Self {
             external_id,
             request_id: data.uuid,
-            payload: hex::decode(data.encoded_data.split('x').nth(1).unwrap())?,
+            network: data.network.try_into()?,
+            chain: data.chain.try_into()?,
+            payload: hex::decode(data.encoded_data.split('x').nth(1).ok_or("missing 0x")?)?,
             fuel_tank_signer_external_id: data
                 .should_sign_fuel_tank
                 .then_some(data.fuel_tank_signer_external_id),
@@ -68,56 +132,20 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
 
 #[derive(Debug)]
 pub struct TransactionJob {
-    client: Client,
     sender: Sender<Vec<TransactionRequest>>,
-    platform_url: String,
-    platform_token: String,
-    network: Arc<Network>,
 }
 
 impl TransactionJob {
-    pub fn new(
-        client: Client,
-        sender: Sender<Vec<TransactionRequest>>,
-        platform_url: String,
-        platform_token: String,
-        network: Arc<Network>,
-    ) -> Self {
-        Self {
-            client,
-            sender,
-            platform_url,
-            platform_token,
-            network,
-        }
+    pub fn new(sender: Sender<Vec<TransactionRequest>>) -> Self {
+        Self { sender }
     }
 
-    pub fn create_job(
-        rpc: Arc<OnlineClient<PolkadotConfig>>,
-        block_sub: Arc<SubscriptionParams>,
-        keypair: Keypair,
-        platform_url: String,
-        platform_token: String,
-    ) -> (TransactionJob, TransactionProcessor) {
+    pub fn create_job(keypair: Keypair) -> (TransactionJob, TransactionProcessor) {
         let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
-        let network = block_sub.get_network();
 
         (
-            TransactionJob::new(
-                Client::new(),
-                sender,
-                platform_url.clone(),
-                platform_token.clone(),
-                network,
-            ),
-            TransactionProcessor::new(
-                rpc,
-                Client::new(),
-                keypair,
-                receiver,
-                platform_url,
-                platform_token,
-            ),
+            TransactionJob::new(sender),
+            TransactionProcessor::new(keypair, receiver),
         )
     }
 
@@ -130,6 +158,7 @@ impl TransactionJob {
     async fn start_polling(&self) {
         let mut interval = interval(Duration::from_millis(TRANSACTION_POLLER_MS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut no_transaction_count = 0;
 
         loop {
             interval.tick().await;
@@ -139,14 +168,14 @@ impl TransactionJob {
                     if let Err(e) = self.sender.try_send(transaction_reqs) {
                         tracing::info!("Error sending transaction requests: {:?}", e);
                     }
+                    no_transaction_count = 0;
                 }
                 Err(e) => {
                     if e.to_string() == NO_TRANSACTIONS_MSG {
-                        tracing::info!(
-                            "GetPendingTransactions: {} for {}",
-                            NO_TRANSACTIONS_MSG,
-                            self.network
-                        );
+                        if no_transaction_count % 10 == 0 {
+                            tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
+                        }
+                        no_transaction_count += 1;
                     } else {
                         tracing::error!("Error: {:?}", e);
                     }
@@ -158,33 +187,15 @@ impl TransactionJob {
     async fn get_pending_transactions(
         &self,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let res = GetPendingTransactions::build_query(get_pending_transactions::Variables {
-            // TODO: get these from config
-            network: crate::NETWORK.into(),
-            chain: crate::CHAIN.into(),
-            limit: TRANSACTION_PAGE_SIZE,
-            cursor: None,
-        });
+        let response_data = utils::execute_query::<GetPendingTransactions>(
+            get_pending_transactions::Variables {
+                limit: TRANSACTION_PAGE_SIZE,
+                cursor: None,
+            },
+            None,
+        )
+        .await?;
 
-        let res = self
-            .client
-            .post(&self.platform_url)
-            .header("Authorization", &self.platform_token)
-            .json(&res)
-            .send()
-            .await?;
-
-        self.extract_transaction_requests(res).await
-    }
-
-    async fn extract_transaction_requests(
-        &self,
-        transactions_res: Response,
-    ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let response_body: graphql_client::Response<get_pending_transactions::ResponseData> =
-            transactions_res.json().await?;
-
-        let response_data = response_body.data.ok_or(NO_TRANSACTIONS_MSG)?;
         let transactions_req = response_data.result.ok_or(NO_TRANSACTIONS_MSG)?.data;
 
         if transactions_req.is_empty() {
@@ -206,51 +217,62 @@ impl TransactionJob {
 }
 
 pub struct TransactionProcessor {
-    chain_client: Arc<OnlineClient<PolkadotConfig>>,
-    platform_client: Client,
     keypair: Keypair,
     receiver: Receiver<Vec<TransactionRequest>>,
-    platform_url: String,
-    platform_token: String,
 }
 
 impl TransactionProcessor {
-    pub(crate) fn new(
-        rpc: Arc<OnlineClient<PolkadotConfig>>,
-        client: Client,
-        keypair: Keypair,
-        receiver: Receiver<Vec<TransactionRequest>>,
-        platform_url: String,
-        platform_token: String,
-    ) -> Self {
-        Self {
-            chain_client: rpc,
-            platform_client: client,
-            keypair,
-            receiver,
-            platform_url,
-            platform_token,
-        }
+    pub(crate) fn new(keypair: Keypair, receiver: Receiver<Vec<TransactionRequest>>) -> Self {
+        Self { keypair, receiver }
     }
 
     async fn transaction_handler(
-        chain_client: Arc<OnlineClient<PolkadotConfig>>,
-        platform_client: Client,
         keypair: Keypair,
         nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
-        platform_url: String,
-        platform_token: String,
         requests: Vec<TransactionRequest>,
     ) {
         let mut inputs = Vec::with_capacity(requests.len());
+
         for request in requests {
             let TransactionRequest {
                 request_id,
                 external_id,
+                network,
+                chain,
                 mut payload,
                 fuel_tank_signer_external_id,
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
+
+            // get block number
+            let Ok((block_number, block_hash, spec_version)) =
+                chain_info::get_block_and_spec_version(network, chain).await
+            else {
+                tracing::error!("could not fetch block number");
+                continue;
+            };
+
+            // check update metadata
+            {
+                let mut update_metadata = false;
+                if let Some(local_spec_version) =
+                    global::metadata_spec_version(network, chain).await
+                {
+                    if local_spec_version < spec_version {
+                        update_metadata = true;
+                    }
+                } else {
+                    update_metadata = true;
+                }
+
+                if update_metadata
+                    && let Err(e) =
+                        chain_info::update_metadata_and_substrate_client(network, chain).await
+                {
+                    tracing::error!("failed to update metadata for {network:?} {chain:?}: {e:?}");
+                    continue;
+                }
+            }
 
             let signer = if let Some(external_id) = external_id {
                 let derive_junction = match external_id.parse::<i64>() {
@@ -270,30 +292,30 @@ impl TransactionProcessor {
             );
 
             let public_key = hex::encode(signer.public_key().0);
-            let chain_nonce = chain_client
-                .tx()
-                .account_nonce(&signer.public_key().into())
-                .await
-                .unwrap();
+            let chain_nonce =
+                match chain_info::get_account_nonce(network, chain, &signer.public_key()).await {
+                    Ok(nonce) => nonce,
+                    Err(e) => {
+                        tracing::error!("failed to fetch nonce for {public_key} with error: {e:?}");
+                        continue;
+                    }
+                };
             let correct_nonce: u64;
             {
                 let mut tracker = nonce_tracker.lock().unwrap();
                 let latest_nonce = tracker.get(&public_key).unwrap_or(&0u64);
                 correct_nonce = *latest_nonce.max(&chain_nonce);
                 let acc_format = trim_account(public_key.clone());
-                tracing::warn!("Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}", correct_nonce + 1);
+                tracing::info!(
+                    "Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}",
+                    correct_nonce + 1
+                );
                 tracker.put(public_key.clone(), correct_nonce + 1);
             }
 
             if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
                 // expiration block is needed for the signature
-                let expiration_block = match chain_client.blocks().at_latest().await {
-                    Ok(block) => block.number() + TX_MORTALITY as u32,
-                    Err(e) => {
-                        tracing::error!("failed to get block number: {e}");
-                        continue;
-                    }
-                };
+                let expiration_block = block_number + TX_MORTALITY as u32;
 
                 // remove the last byte of the payload because it is the settings param, and we are
                 // replacing it
@@ -340,41 +362,90 @@ impl TransactionProcessor {
                 tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
             }
 
-            let params = DefaultExtrinsicParamsBuilder::new()
-                .nonce(correct_nonce)
-                .mortal(TX_MORTALITY)
-                .build();
-
-            let signed_tx = match chain_client
-                .tx()
-                .create_signed(&Wrapper(payload.clone()), &signer, params)
-                .await
-            {
-                Ok(tx) => tx,
-                Err(e) => {
-                    tracing::error!("Failed to create signed transaction: {:?}", e);
-                    continue;
-                }
-            };
             let dummy_tx = {
                 // this is system.remark with empty value: 0x000000
-                let payload = vec![0, 0, 0];
+                let payload = RawPayload {
+                    pallet_name: "System".to_string(),
+                    call_name: "remark".to_string(),
+                    field_bytes: RawFields(vec![0]),
+                };
                 let params = DefaultExtrinsicParamsBuilder::new()
                     .nonce(correct_nonce)
-                    .mortal(DUMMY_TX_MORTALITY)
+                    .mortal_from_unchecked(DUMMY_TX_MORTALITY, block_number.into(), block_hash)
                     .build();
-                let signed_dummy_tx = match chain_client
+                let Some(chain_client) = global::substrate_client(network, chain).await else {
+                    tracing::error!(
+                        "Missing substrate client for network {network:?}, chain {chain:?}"
+                    );
+                    continue;
+                };
+                let client_at_block = chain_client.at_block(block_number).unwrap();
+                let signed_dummy_tx = match client_at_block
                     .tx()
-                    .create_signed(&Wrapper(payload), &signer, params)
-                    .await
+                    .create_signable_offline(&payload, params)
                 {
-                    Ok(tx) => tx,
+                    Ok(mut tx) => match tx.sign(&signer) {
+                        Ok(signed) => signed,
+                        Err(e) => {
+                            tracing::error!("Failed to sign dummy transaction: {:?}", e);
+                            continue;
+                        }
+                    },
                     Err(e) => {
                         tracing::error!("Failed to create signed dummy transaction: {:?}", e);
                         continue;
                     }
                 };
                 format!("0x{}", hex::encode(signed_dummy_tx.encoded()))
+            };
+            let signed_tx = {
+                // contruct payload
+                if payload.len() < 2 {
+                    tracing::error!("payload does not store pallet index and call index");
+                    continue;
+                }
+                let payload = match RawPayload::from_bytes(network, chain, &payload).await {
+                    Some(x) => x,
+                    None => {
+                        tracing::error!("generating raw payload failed");
+                        continue;
+                    }
+                };
+
+                // sign extrinsic
+                let params = DefaultExtrinsicParamsBuilder::new()
+                    .nonce(correct_nonce)
+                    .mortal_from_unchecked(TX_MORTALITY, block_number.into(), block_hash)
+                    .build();
+                let Some(chain_client) = global::substrate_client(network, chain).await else {
+                    tracing::error!(
+                        "Missing substrate client for network {network:?}, chain {chain:?}"
+                    );
+                    continue;
+                };
+                let Ok(client_at_block) = chain_client.at_block(block_number) else {
+                    tracing::error!(
+                        "Client metadata or spec_version missing for network {network:?}, chain {chain:?}"
+                    );
+                    continue;
+                };
+
+                match client_at_block
+                    .tx()
+                    .create_signable_offline(&payload, params)
+                {
+                    Ok(mut tx) => match tx.sign(&signer) {
+                        Ok(signed) => signed,
+                        Err(e) => {
+                            tracing::error!("Failed to sign transaction: {:?}", e);
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to create signed transaction: {:?}", e);
+                        continue;
+                    }
+                }
             };
             let encoded_tx = hex::encode(signed_tx.encoded());
 
@@ -390,13 +461,7 @@ impl TransactionProcessor {
                 signed_abandon_extrinsic: dummy_tx.clone(),
             });
         }
-        platform_client::sign_transactions(
-            platform_client.clone(),
-            platform_url.clone(),
-            platform_token.clone(),
-            inputs,
-        )
-        .await;
+        platform_client::sign_transactions(inputs).await;
     }
 
     async fn launch_job_scheduler(mut self) {
@@ -405,12 +470,8 @@ impl TransactionProcessor {
 
         while let Some(requests) = self.receiver.recv().await {
             tokio::spawn(Self::transaction_handler(
-                Arc::clone(&self.chain_client),
-                self.platform_client.clone(),
                 self.keypair.clone(),
                 Arc::clone(&nonce_tracker),
-                self.platform_url.clone(),
-                self.platform_token.clone(),
                 requests,
             ));
         }
