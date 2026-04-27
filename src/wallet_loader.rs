@@ -7,6 +7,12 @@ use subxt_signer::SecretUri;
 use subxt_signer::bip39::Mnemonic;
 use subxt_signer::sr25519::Keypair;
 
+pub fn print_seed() {
+    // let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
+    // let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
+    // let _ = load_wallet(&PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path"), &key_pass, true);
+}
+
 fn decrypt_mnemonic(content: &str) -> String {
     let stripped = content
         .trim()

@@ -1,11 +1,12 @@
 #![allow(missing_docs, long_running_const_eval, clippy::too_many_arguments)]
 
-use crate::importer::write_seed;
 use crate::multitenant::set_multitenant;
 use crate::substrate_client::EnjinConfig;
 use crate::transaction::TransactionJob;
+use crate::types::{Cli, Commands};
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::load_seed;
+use clap::Parser;
 use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
 use std::env;
 use std::path::PathBuf;
@@ -47,16 +48,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
     let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
 
-    let args: Vec<String> = env::args().skip(1).collect();
-    if let Some(arg) = args.first()
-        && arg == "import"
-    {
-        println!("Enjin Platform - Import Wallet");
-        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
-        let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
-        write_seed(seed, &seed_path, &key_pass).expect("Failed to import your wallet");
+    // check for subcommands
+    match Cli::parse().command {
+        Some(Commands::Import) => {
+            println!("Enjin Platform - Import Wallet");
+            let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
+            let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
+            importer::write_seed(seed, &seed_path, &key_pass)
+                .expect("Failed to import your wallet");
 
-        exit(1);
+            exit(0);
+        }
+        Some(Commands::PrintSeed) => {
+            wallet_loader::print_seed();
+            exit(0);
+        }
+        None => {
+            // if there is no subcommand, run the daemon
+        }
     }
 
     let keypair = load_seed(&seed_path, &key_pass);

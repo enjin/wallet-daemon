@@ -1,6 +1,21 @@
 use crate::SubstrateClient;
+use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use subxt::Metadata;
+
+#[derive(Parser, Debug)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Import a wallet from a known seed
+    Import,
+    /// Print the mnemonic and private key
+    PrintSeed,
+}
 
 #[derive(Eq, Hash, PartialEq, Copy, Clone, Debug)]
 pub enum Chain {
