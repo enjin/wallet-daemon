@@ -7,12 +7,6 @@ use subxt_signer::SecretUri;
 use subxt_signer::bip39::Mnemonic;
 use subxt_signer::sr25519::Keypair;
 
-pub fn print_seed() {
-    // let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
-    // let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
-    // let _ = load_wallet(&PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path"), &key_pass, true);
-}
-
 fn decrypt_mnemonic(content: &str) -> String {
     let stripped = content
         .trim()
@@ -28,7 +22,7 @@ fn decrypt_mnemonic(content: &str) -> String {
     stripped
 }
 
-pub fn load_seed(seed_path: &str, key_pass: &str) -> Keypair {
+pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
     let seed_path = PathBuf::from_str(seed_path).expect("SEED_PATH must be a valid path");
     if !seed_path.exists() {
         panic!("SEED_PATH does not exist: {:?}", seed_path)
@@ -73,9 +67,9 @@ pub fn load_seed(seed_path: &str, key_pass: &str) -> Keypair {
         let wallet_seed_path = seed_dir.join("wallet.seed");
         fs::write(&wallet_seed_path, &v2_encrypted).expect("Unable to write wallet.seed");
 
-        let verified_keypair = load_wallet(&wallet_seed_path, key_pass, false);
+        let verified_keypair = load_wallet(&wallet_seed_path, key_pass, PrintKind::Nothing);
 
-        let v1_keypair = load_wallet(&v1_path, key_pass, false);
+        let v1_keypair = load_wallet(&v1_path, key_pass, PrintKind::Nothing);
 
         if verified_keypair.public_key().0 != v1_keypair.public_key().0 {
             panic!("V2 migration failed: public key mismatch");
@@ -85,10 +79,15 @@ pub fn load_seed(seed_path: &str, key_pass: &str) -> Keypair {
         seed_path = wallet_seed_path;
     }
 
-    load_wallet(&seed_path, key_pass, true)
+    let print_kind = if print_seed {
+        PrintKind::Seed
+    } else {
+        PrintKind::Normal
+    };
+    load_wallet(&seed_path, key_pass, print_kind)
 }
 
-fn get_keys(seed_path: &Path, key_pass: &str) -> Keypair {
+fn get_keys(seed_path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = if seed_path.is_absolute() {
         seed_path.to_path_buf()
@@ -108,6 +107,9 @@ fn get_keys(seed_path: &Path, key_pass: &str) -> Keypair {
         };
 
         let uri = SecretUri::from_str(&decrypted).expect("valid URI");
+        if print_seed {
+            println!("{}", &decrypted);
+        }
         return Keypair::from_uri(&uri).expect("valid keypair");
     }
 
@@ -117,17 +119,31 @@ fn get_keys(seed_path: &Path, key_pass: &str) -> Keypair {
     let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
 
     fs::write(&path, encrypted_mnemonic).expect("Unable to write file");
+    if print_seed {
+        println!("{}", &mnemonic);
+    }
 
     keypair_tx
 }
 
-pub fn load_wallet(seed_path: &Path, key_pass: &str, print_log: bool) -> Keypair {
+#[derive(PartialEq, Eq, Clone, Copy)]
+/// What prints in `load_wallet`
+pub enum PrintKind {
+    /// Print normal output
+    Normal,
+    /// Print nothing
+    Nothing,
+    /// Print the private key and mnemonic
+    Seed,
+}
+
+pub fn load_wallet(seed_path: &Path, key_pass: &str, print_kind: PrintKind) -> Keypair {
     let version = env!("CARGO_PKG_VERSION");
-    let signer = get_keys(seed_path, key_pass);
+    let signer = get_keys(seed_path, key_pass, print_kind == PrintKind::Seed);
     let public_key = signer.public_key().0;
     let account_id = sp_core::crypto::AccountId32::from(public_key);
 
-    if print_log {
+    if print_kind == PrintKind::Normal {
         println!("******************* Enjin Wallet Daemon v{version} *******************");
         println!(
             "** Enjin Relaychain   (SS58): {}",
@@ -177,7 +193,7 @@ mod tests {
         drop(v1_file);
 
         let seed_path = temp_dir.path().to_str().unwrap();
-        let keypair = load_seed(seed_path, key_pass);
+        let keypair = load_seed(seed_path, key_pass, false);
         let migrated_public_key = keypair.public_key().0;
 
         let wallet_seed_path = temp_dir.path().join("wallet.seed");
@@ -190,7 +206,7 @@ mod tests {
             "v1 file should be deleted after migration"
         );
 
-        let keypair2 = load_seed(seed_path, key_pass);
+        let keypair2 = load_seed(seed_path, key_pass, false);
         assert_eq!(
             migrated_public_key,
             keypair2.public_key().0,
@@ -209,14 +225,14 @@ mod tests {
         fs::write(&wallet_seed_path, &encrypted).unwrap();
 
         let seed_path = temp_dir.path().to_str().unwrap();
-        let keypair = load_seed(seed_path, key_pass);
+        let keypair = load_seed(seed_path, key_pass, false);
 
         let v1_path = temp_dir.path().join("73723235test");
         let mut v1_file = fs::File::create(&v1_path).unwrap();
         write!(v1_file, "\"{}\"", mnemonic).unwrap();
         drop(v1_file);
 
-        let keypair_v1 = load_wallet(&v1_path, key_pass, false);
+        let keypair_v1 = load_wallet(&v1_path, key_pass, PrintKind::Nothing);
         assert_eq!(
             keypair.public_key().0,
             keypair_v1.public_key().0,

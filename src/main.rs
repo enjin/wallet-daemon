@@ -38,13 +38,6 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // init logging
-    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(log_filter))
-        .finish()
-        .try_init()?;
-
     let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
     let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
 
@@ -60,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             exit(0);
         }
         Some(Commands::PrintSeed) => {
-            wallet_loader::print_seed();
+            load_seed(&seed_path, &key_pass, true);
             exit(0);
         }
         None => {
@@ -68,7 +61,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let keypair = load_seed(&seed_path, &key_pass);
+    // init logging
+    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(log_filter))
+        .finish()
+        .try_init()?;
+
+    let keypair = load_seed(&seed_path, &key_pass, false);
 
     let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
     global::PLATFORM_URL
