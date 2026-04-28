@@ -13,7 +13,7 @@ pub struct Cli {
 pub enum Commands {
     /// Import a wallet from a known seed
     Import,
-    /// Print the mnemonic and private key
+    /// Prints the decrypted seed phrase. Appends password to v1 seed phrases.
     PrintSeed,
 }
 

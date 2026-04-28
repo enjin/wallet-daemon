@@ -39,12 +39,12 @@ mod wallet_loader;
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
-    let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
 
     // check for subcommands
     match Cli::parse().command {
         Some(Commands::Import) => {
             println!("Enjin Platform - Import Wallet");
+            let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
             let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
             let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
             importer::write_seed(seed, &seed_path, &key_pass)
@@ -53,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             exit(0);
         }
         Some(Commands::PrintSeed) => {
+            let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
             load_seed(&seed_path, &key_pass, true);
             exit(0);
         }
@@ -68,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish()
         .try_init()?;
 
+    let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
     let keypair = load_seed(&seed_path, &key_pass, false);
 
     let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
