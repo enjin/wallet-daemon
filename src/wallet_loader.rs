@@ -113,17 +113,47 @@ fn get_keys(seed_path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
         return Keypair::from_uri(&uri).expect("valid keypair");
     }
 
-    let mnemonic = Mnemonic::generate(12).unwrap().to_string();
+    let (mnemonic, keypair) = write_mnemonic(&path, key_pass, None);
+    if print_seed {
+        println!("{}", &mnemonic);
+    }
+    keypair
+}
+
+pub fn write_mnemonic(
+    seed_path: &Path,
+    key_pass: &str,
+    mnemonic: Option<&str>,
+) -> (String, Keypair) {
+    let base_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = if seed_path.is_absolute() {
+        seed_path.to_path_buf()
+    } else {
+        base_path.join(seed_path)
+    };
+
+    let mnemonic = match mnemonic {
+        Some(m) => m.to_string(),
+        None => Mnemonic::generate(12).unwrap().to_string(),
+    };
+
     let encrypted_mnemonic = crypto::encrypt(&mnemonic, key_pass);
     let uri = SecretUri::from_str(&mnemonic).expect("valid URI");
     let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
 
-    fs::write(&path, encrypted_mnemonic).expect("Unable to write file");
-    if print_seed {
-        println!("{}", &mnemonic);
+    let final_path = if path.is_dir() {
+        path.join("wallet.seed")
+    } else {
+        path
+    };
+
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent).ok();
     }
 
-    keypair_tx
+    fs::write(&final_path, encrypted_mnemonic).expect("Unable to write file");
+
+    (mnemonic, keypair_tx)
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]

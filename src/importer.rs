@@ -1,38 +1,9 @@
-use crate::crypto;
+use crate::wallet_loader::write_mnemonic;
 use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
-use std::fs;
 use std::path::Path;
-use std::str::FromStr;
-use subxt_signer::SecretUri;
-use subxt_signer::sr25519::Keypair;
 
 pub fn write_seed(seed: String, seed_path: &Path, key_pass: &str) -> std::io::Result<()> {
-    let base_path = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let path = if seed_path.is_absolute() {
-        seed_path.to_path_buf()
-    } else {
-        base_path.join(seed_path)
-    };
-
-    let secret_with_pass = format!("{}///{}", seed, key_pass);
-    let uri = SecretUri::from_str(&secret_with_pass).expect("valid URI");
-    let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
-    let encrypted_mnemonic = crypto::encrypt(&secret_with_pass, key_pass);
-
-    let final_path = if path.is_dir() {
-        path.join(format!(
-            "73723235{}",
-            hex::encode(keypair_tx.public_key().0)
-        ))
-    } else {
-        path
-    };
-
-    if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-
-    fs::write(&final_path, encrypted_mnemonic).expect("Unable to write file");
+    let (_, keypair_tx) = write_mnemonic(seed_path, key_pass, Some(&seed));
 
     let public_key = keypair_tx.public_key().0;
     let account_id = sp_core::crypto::AccountId32::from(public_key);
