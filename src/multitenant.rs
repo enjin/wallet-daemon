@@ -27,6 +27,8 @@ pub async fn set_multitenant(keypair: Keypair) {
     tracing::info!("Platform wallet daemon set to: 0x{account}");
 
     if !updated {
-        panic!("There was an error updating your account. Please check your access token.")
+        panic!(
+            "SetDaemonWalletAccount returned false when true was expected. Please check your access token."
+        )
     }
 }
