@@ -177,7 +177,7 @@ impl TransactionJob {
                         }
                         no_transaction_count += 1;
                     } else {
-                        tracing::error!("Error: {:?}", e);
+                        tracing::error!("Error: {}", e);
                     }
                 }
             }
@@ -207,7 +207,7 @@ impl TransactionJob {
             .filter_map(|p| {
                 TransactionRequest::try_from(p)
                     .map_err(|e| {
-                        tracing::error!("Error creating TransactionRequest: {:?}", e);
+                        tracing::error!("Error creating TransactionRequest: {}", e);
                         e
                     })
                     .ok()
@@ -269,7 +269,7 @@ impl TransactionProcessor {
                     && let Err(e) =
                         chain_info::update_metadata_and_substrate_client(network, chain).await
                 {
-                    tracing::error!("failed to update metadata for {network:?} {chain:?}: {e:?}");
+                    tracing::error!("failed to update metadata for {network:?} {chain:?}: {e}");
                     continue;
                 }
             }
@@ -296,7 +296,7 @@ impl TransactionProcessor {
                 match chain_info::get_account_nonce(network, chain, &signer.public_key()).await {
                     Ok(nonce) => nonce,
                     Err(e) => {
-                        tracing::error!("failed to fetch nonce for {public_key} with error: {e:?}");
+                        tracing::error!("failed to fetch nonce for {public_key} with error: {e}");
                         continue;
                     }
                 };
@@ -387,12 +387,12 @@ impl TransactionProcessor {
                     Ok(mut tx) => match tx.sign(&signer) {
                         Ok(signed) => signed,
                         Err(e) => {
-                            tracing::error!("Failed to sign dummy transaction: {:?}", e);
+                            tracing::error!("Failed to sign dummy transaction: {}", e);
                             continue;
                         }
                     },
                     Err(e) => {
-                        tracing::error!("Failed to create signed dummy transaction: {:?}", e);
+                        tracing::error!("Failed to create signed dummy transaction: {}", e);
                         continue;
                     }
                 };
@@ -437,12 +437,12 @@ impl TransactionProcessor {
                     Ok(mut tx) => match tx.sign(&signer) {
                         Ok(signed) => signed,
                         Err(e) => {
-                            tracing::error!("Failed to sign transaction: {:?}", e);
+                            tracing::error!("Failed to sign transaction: {}", e);
                             continue;
                         }
                     },
                     Err(e) => {
-                        tracing::error!("Failed to create signed transaction: {:?}", e);
+                        tracing::error!("Failed to create signed transaction: {}", e);
                         continue;
                     }
                 }
