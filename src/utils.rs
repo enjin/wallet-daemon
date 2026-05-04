@@ -13,8 +13,7 @@ where
     T::ResponseData: Debug,
 {
     let query_body = T::build_query(variables);
-    let printed_request_body = serde_json::to_string(&query_body);
-    tracing::debug!("Request Body: {printed_request_body:?}");
+    tracing::debug!("Request Body: {:?}", serde_json::to_string(&query_body));
     let client = global::graphql_client().await;
 
     let response = if let Some(strategy) = retry_strategy {
@@ -38,17 +37,15 @@ where
     };
     if response.status() == StatusCode::OK {
         let response_body: graphql_client::Response<T::ResponseData> = response.json().await?;
-        let printed_response_body = format!("Response Body: {:?}", &response_body);
-        tracing::debug!("Response Body: {printed_response_body}");
+        tracing::debug!("Response Body: {:?}", &response_body);
         response_body
             .data
-            .ok_or(format!("no response data - Request body: {printed_request_body:?}, Response body: {printed_response_body}").into())
+            .ok_or(format!("no response data: {:?}", response_body.errors).into())
     } else {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|err| format!("failed to read response body: {err}"));
-        Err(format!("response not ok: status={status}, request body={printed_request_body:?}, response body={body}").into())
+        Err(format!(
+            "Received invalid response with status code {}",
+            response.status()
+        )
+        .into())
     }
 }

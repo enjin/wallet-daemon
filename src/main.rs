@@ -7,7 +7,7 @@ use crate::types::{Cli, Commands};
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::load_seed;
 use clap::Parser;
-use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
+use reqwest::header::HeaderMap;
 use std::env;
 use std::path::PathBuf;
 use std::process::exit;
@@ -86,20 +86,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut headers = HeaderMap::new();
         headers.insert(
-            AUTHORIZATION,
+            reqwest::header::AUTHORIZATION,
             platform_token
                 .parse()
                 .expect("could not parse Authorization header"),
         );
         headers.insert(
-            USER_AGENT,
+            reqwest::header::USER_AGENT,
             format!("Enjin-Wallet-Daemon/{}", env!("CARGO_PKG_VERSION"))
                 .parse()
                 .expect("could not parse User-Agent header"),
         );
-        global::HEADERS
-            .set(headers)
-            .expect("platform token already set");
+        headers.insert(
+            reqwest::header::ACCEPT,
+            "application/json"
+                .parse()
+                .expect("could not parse Accept header"),
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json"
+                .parse()
+                .expect("could not parse content-type header"),
+        );
+        global::HEADERS.set(headers).expect("headers already set");
     }
 
     set_multitenant(keypair.clone()).await;
