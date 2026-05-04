@@ -35,7 +35,7 @@ pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
                 tracing::info!("Signed transaction #{}", uuid);
             }
         }
-        Err(e) => tracing::error!("Error sending SignTransactions: {:?}", e),
+        Err(e) => tracing::error!("Error sending SignTransactions: {}", e),
     }
 }
 
@@ -58,9 +58,6 @@ pub async fn populate_managed_wallets(wallets: Vec<PopulateManagedWalletInput>) 
                 tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
             }
         }
-        Err(e) => tracing::error!(
-            "Error decoding body {:?} of response to submitted account",
-            e
-        ),
+        Err(e) => tracing::error!("Error decoding body {} of response to submitted account", e),
     }
 }

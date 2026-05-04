@@ -13,8 +13,10 @@ where
     T::ResponseData: Debug,
 {
     let query_body = T::build_query(variables);
-    if let Ok(json) = serde_json::to_string(&query_body) {
-        tracing::debug!("Request Body: {json}");
+    if tracing::enabled!(tracing::Level::DEBUG)
+        && let Ok(json) = serde_json::to_string(&query_body)
+    {
+        tracing::debug!("Request body: {json}");
     }
     let client = global::graphql_client().await;
 
@@ -39,14 +41,45 @@ where
     };
     if response.status() == StatusCode::OK {
         let response_body: graphql_client::Response<T::ResponseData> = response.json().await?;
-        tracing::debug!("Response Body: {response_body:?}");
-        response_body.data.ok_or("no response data".into())
+        tracing::debug!("Response Body: {:?}", &response_body);
+        response_body.data.ok_or_else(|| {
+            if let Some(errors) = response_body.errors {
+                let error_messages = errors
+                    .into_iter()
+                    .map(|e| {
+                        if let Some(extensions) = e.extensions {
+                            if let Some(category) = extensions.get("category") {
+                                if category == "validation" {
+                                    let ext_str = extensions
+                                        .into_iter()
+                                        .filter(|(k, _)| k.as_str() != "category")
+                                        .map(|(_k, v)| format!("{v}"))
+                                        .collect::<Vec<_>>()
+                                        .join(",");
+                                    let msg = e.message;
+                                    format!("{}\n    Extensions: {}", msg, ext_str)
+                                } else {
+                                    e.message
+                                }
+                            } else {
+                                e.message
+                            }
+                        } else {
+                            e.message
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let error_str = error_messages.join("\n- ");
+                format!("The following error(s) occurred:\n- {}", error_str).into()
+            } else {
+                "no response data".into()
+            }
+        })
     } else {
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|err| format!("failed to read response body: {err}"));
-        Err(format!("response not ok: status={status}, body={body}").into())
+        Err(format!(
+            "Received invalid response with status code {}",
+            response.status()
+        )
+        .into())
     }
 }

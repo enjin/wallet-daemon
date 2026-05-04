@@ -21,6 +21,7 @@ struct EncryptedData {
     #[serde(skip_serializing_if = "Option::is_none")]
     nonce: Option<String>,
     data: String,
+    /// If it was imported from v1 (it appends the password). Does not refer to import command.
     #[serde(skip_serializing_if = "Option::is_none")]
     imported: Option<bool>,
 }

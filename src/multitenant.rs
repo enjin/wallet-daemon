@@ -22,11 +22,13 @@ pub async fn set_multitenant(keypair: Keypair) {
     let account = hex::encode(keypair.public_key().0);
     let updated = set_daemon_wallet_account(keypair)
         .await
-        .expect("There was an error updating your account. Please check your access token.");
+        .unwrap_or_else(|e| panic!("There was an error updating your account {}.", e));
 
     tracing::info!("Platform wallet daemon set to: 0x{account}");
 
     if !updated {
-        panic!("There was an error updating your account. Please check your access token.")
+        panic!(
+            "SetDaemonWalletAccount returned false when true was expected. Please check your access token."
+        )
     }
 }

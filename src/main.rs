@@ -1,12 +1,13 @@
 #![allow(missing_docs, long_running_const_eval, clippy::too_many_arguments)]
 
-use crate::importer::write_seed;
 use crate::multitenant::set_multitenant;
 use crate::substrate_client::EnjinConfig;
 use crate::transaction::TransactionJob;
+use crate::types::{Cli, Commands};
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::load_seed;
-use reqwest::header::{AUTHORIZATION, HeaderMap, USER_AGENT};
+use clap::Parser;
+use reqwest::header::HeaderMap;
 use std::env;
 use std::path::PathBuf;
 use std::process::exit;
@@ -37,6 +38,30 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
+
+    // check for subcommands
+    match Cli::parse().command {
+        Some(Commands::Import) => {
+            println!("Enjin Platform - Import Wallet");
+            let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
+            let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
+            let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
+            importer::write_seed(seed, &seed_path, &key_pass)
+                .expect("Failed to import your wallet");
+
+            exit(0);
+        }
+        Some(Commands::PrintSeed) => {
+            let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
+            load_seed(&seed_path, &key_pass, true);
+            exit(0);
+        }
+        None => {
+            // if there is no subcommand, run the daemon
+        }
+    }
+
     // init logging
     let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
     tracing_subscriber::fmt()
@@ -44,22 +69,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .finish()
         .try_init()?;
 
-    let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
     let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
-
-    let args: Vec<String> = env::args().skip(1).collect();
-    if let Some(arg) = args.first()
-        && arg == "import"
-    {
-        println!("Enjin Platform - Import Wallet");
-        let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
-        let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
-        write_seed(seed, &seed_path, &key_pass).expect("Failed to import your wallet");
-
-        exit(1);
-    }
-
-    let keypair = load_seed(&seed_path, &key_pass);
+    let keypair = load_seed(&seed_path, &key_pass, false);
 
     let platform_url = dotenvy::var("PLATFORM_URL").unwrap_or(DEFAULT_PLATFORM_URL.to_string());
     global::PLATFORM_URL
@@ -75,20 +86,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut headers = HeaderMap::new();
         headers.insert(
-            AUTHORIZATION,
+            reqwest::header::AUTHORIZATION,
             platform_token
                 .parse()
                 .expect("could not parse Authorization header"),
         );
         headers.insert(
-            USER_AGENT,
+            reqwest::header::USER_AGENT,
             format!("Enjin-Wallet-Daemon/{}", env!("CARGO_PKG_VERSION"))
                 .parse()
                 .expect("could not parse User-Agent header"),
         );
-        global::HEADERS
-            .set(headers)
-            .expect("platform token already set");
+        headers.insert(
+            reqwest::header::ACCEPT,
+            "application/json"
+                .parse()
+                .expect("could not parse Accept header"),
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json"
+                .parse()
+                .expect("could not parse content-type header"),
+        );
+        global::HEADERS.set(headers).expect("headers already set");
     }
 
     set_multitenant(keypair.clone()).await;
