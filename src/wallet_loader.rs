@@ -46,33 +46,23 @@ fn decrypt_mnemonic(content: &str) -> String {
     stripped
 }
 
-pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
-    let seed_path = PathBuf::from_str(seed_path).expect("SEED_PATH must be a valid path");
-
+pub fn load_seed(seed_path: PathBuf, key_pass: &str, print_seed: bool) -> Keypair {
     let print_kind = if print_seed {
         PrintKind::Seed
     } else {
         PrintKind::Normal
     };
 
-    if !seed_path.exists() {
+    if !seed_path.exists() || seed_path.is_file() {
         return load_wallet(&seed_path, key_pass, print_kind);
     }
 
     let mut v1_migration_path: Option<PathBuf> = None;
-    let seed_dir = if seed_path.is_dir() {
-        seed_path
-    } else {
-        seed_path
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or(seed_path.clone())
-    };
-    let mut seed_path = if seed_dir.join("wallet.seed").exists() {
-        seed_dir.join("wallet.seed")
+    let mut seed_path = if seed_path.join("wallet.seed").exists() {
+        seed_path.join("wallet.seed")
     } else {
         let mut backup_seed_path = None;
-        if let Ok(entries) = fs::read_dir(&seed_dir) {
+        if let Ok(entries) = fs::read_dir(&seed_path) {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str()
                     && name.starts_with("73723235")
@@ -86,8 +76,13 @@ pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
         if backup_seed_path.is_some() {
             v1_migration_path = backup_seed_path.clone();
         }
-        backup_seed_path.unwrap_or(seed_dir.join("wallet.seed"))
+        backup_seed_path.unwrap_or(seed_path.join("wallet.seed"))
     };
+
+    if !seed_path.exists() {
+        return write_mnemonic(&seed_path, key_pass, None, true).1;
+    }
+
     tracing::debug!("loading seed from path: {}", seed_path.display());
 
     if let Some(v1_path) = v1_migration_path {
@@ -95,11 +90,10 @@ pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
         let v1_content = fs::read_to_string(&v1_path).expect("Unable to read v1 file");
         let mnemonic = decrypt_mnemonic(&v1_content);
         let v2_encrypted = crypto::encrypt_with_imported(&mnemonic, key_pass, true);
-        let wallet_seed_path = seed_dir.join("wallet.seed");
+        let wallet_seed_path = v1_path.parent().unwrap().join("wallet.seed");
         fs::write(&wallet_seed_path, &v2_encrypted).expect("Unable to write wallet.seed");
 
         let verified_keypair = load_wallet(&wallet_seed_path, key_pass, PrintKind::Nothing);
-
         let v1_keypair = load_wallet(&v1_path, key_pass, PrintKind::Nothing);
 
         if verified_keypair.public_key().0 != v1_keypair.public_key().0 {
@@ -114,8 +108,8 @@ pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
 }
 
 fn get_keys(path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
-       if path.is_file() {
-        let content = fs::read_to_string(&path).expect("Unable to read file");
+    if path.is_file() {
+        let content = fs::read_to_string(path).expect("Unable to read file");
 
         let decrypted = match crypto::decrypt(&content, key_pass) {
             Ok(decrypted) => decrypted,
@@ -132,7 +126,7 @@ fn get_keys(path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
         return Keypair::from_uri(&uri).expect("valid keypair");
     }
 
-    let (mnemonic, keypair) = write_mnemonic(&path, key_pass, None);
+    let (mnemonic, keypair) = write_mnemonic(path, key_pass, None, true);
     if print_seed {
         println!("{}", &mnemonic);
     }
@@ -143,6 +137,7 @@ pub fn write_mnemonic(
     path: &Path,
     key_pass: &str,
     mnemonic: Option<&str>,
+    allow_overwrite: bool,
 ) -> (String, Keypair) {
     let mnemonic = match mnemonic {
         Some(m) => m.to_string(),
@@ -153,7 +148,11 @@ pub fn write_mnemonic(
     let uri = SecretUri::from_str(&mnemonic).expect("valid URI");
     let keypair_tx = Keypair::from_uri(&uri).expect("valid keypair");
 
-    let final_path = if path.is_dir() {
+    let is_directory = path.is_dir();
+    let final_path = if is_directory {
+        path.join("wallet.seed")
+    } else if !path.exists() && path.extension().is_none() {
+        fs::create_dir_all(path).ok();
         path.join("wallet.seed")
     } else {
         path.to_path_buf()
@@ -163,6 +162,9 @@ pub fn write_mnemonic(
         fs::create_dir_all(parent).ok();
     }
 
+    if !allow_overwrite && final_path.is_file() {
+        panic!("file at {final_path:?} already exists");
+    }
     fs::write(&final_path, encrypted_mnemonic).expect("Unable to write file");
 
     (mnemonic, keypair_tx)
@@ -234,8 +236,8 @@ mod tests {
         .unwrap();
         drop(v1_file);
 
-        let seed_path = temp_dir.path().to_str().unwrap();
-        let keypair = load_seed(seed_path, key_pass, false);
+        let seed_path = temp_dir.path().to_path_buf();
+        let keypair = load_seed(seed_path.clone(), key_pass, false);
         let migrated_public_key = keypair.public_key().0;
 
         let wallet_seed_path = temp_dir.path().join("wallet.seed");
@@ -266,7 +268,7 @@ mod tests {
         let wallet_seed_path = temp_dir.path().join("wallet.seed");
         fs::write(&wallet_seed_path, &encrypted).unwrap();
 
-        let seed_path = temp_dir.path().to_str().unwrap();
+        let seed_path = temp_dir.path().to_path_buf();
         let keypair = load_seed(seed_path, key_pass, false);
 
         let v1_path = temp_dir.path().join("73723235test");
@@ -342,7 +344,9 @@ mod tests {
 
         let none_file = temp_dir.path().join("nonexistent.seed");
 
-        let result = resolve_seed_path(Some(temp_dir.path().join("nonexistent.seed").to_str().unwrap()));
+        let result = resolve_seed_path(Some(
+            temp_dir.path().join("nonexistent.seed").to_str().unwrap(),
+        ));
         assert_eq!(result, none_file);
     }
 
@@ -372,7 +376,47 @@ mod tests {
         let key_pass = "test_password";
 
         let none_file = temp_dir.path().join("nonexistent.seed");
-        let _result = load_seed(none_file.to_str().unwrap(), key_pass, false);
-        assert!(none_file.exists());
+        let _result = load_seed(none_file, key_pass, false);
+        assert!(temp_dir.path().join("nonexistent.seed").exists());
+    }
+
+    #[test]
+    fn test_load_seed_specific_file_not_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_pass = "test_password";
+        let mnemonic = "muscle wing great bounce arctic guess trim celery budget shock march whale";
+        let encrypted = crypto::encrypt_with_imported(mnemonic, key_pass, true);
+
+        let wallet_seed_path = temp_dir.path().join("wallet.seed");
+        fs::write(&wallet_seed_path, &encrypted).unwrap();
+
+        let custom_file = temp_dir.path().join("custom.seed");
+        let custom_encrypted = crypto::encrypt_with_imported(mnemonic, key_pass, true);
+        fs::write(&custom_file, &custom_encrypted).unwrap();
+
+        let _result = load_seed(custom_file, key_pass, false);
+
+        assert!(wallet_seed_path.exists());
+        assert!(!fs::read_to_string(&wallet_seed_path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_write_mnemonic_creates_nonexistent_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_pass = "test_password";
+
+        let nonexistent_dir = temp_dir.path().join("new_directory_that_does_not_exist");
+        assert!(!nonexistent_dir.exists());
+
+        let (_mnemonic, _keypair) = write_mnemonic(&nonexistent_dir, key_pass, None, false);
+
+        assert!(nonexistent_dir.is_dir(), "Directory should be created");
+        let wallet_seed_path = nonexistent_dir.join("wallet.seed");
+        assert!(
+            wallet_seed_path.exists(),
+            "wallet.seed should be created in the new directory"
+        );
+        let content = fs::read_to_string(&wallet_seed_path).unwrap();
+        assert!(!content.is_empty(), "wallet.seed should not be empty");
     }
 }
