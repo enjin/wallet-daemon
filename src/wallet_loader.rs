@@ -7,6 +7,30 @@ use subxt_signer::SecretUri;
 use subxt_signer::bip39::Mnemonic;
 use subxt_signer::sr25519::Keypair;
 
+pub fn resolve_seed_path(seed_path: Option<&str>) -> PathBuf {
+    let cwd = env::current_dir().expect("Failed to get current directory");
+
+    match seed_path {
+        Some(path) => {
+            let seed_path = PathBuf::from_str(path).expect("SEED_PATH must be a valid path");
+            if seed_path.is_absolute() {
+                seed_path
+            } else {
+                cwd.join(&seed_path)
+            }
+        }
+        None => {
+            if cwd.join("wallet.seed").is_file() {
+                cwd.join("wallet.seed")
+            } else if cwd.join("store").is_dir() {
+                cwd.join("store")
+            } else {
+                cwd
+            }
+        }
+    }
+}
+
 fn decrypt_mnemonic(content: &str) -> String {
     let stripped = content
         .trim()
@@ -24,9 +48,16 @@ fn decrypt_mnemonic(content: &str) -> String {
 
 pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
     let seed_path = PathBuf::from_str(seed_path).expect("SEED_PATH must be a valid path");
-    if !seed_path.exists() {
-        panic!("SEED_PATH does not exist: {:?}", seed_path)
+
+    let print_kind = if print_seed {
+        PrintKind::Seed
+    } else {
+        PrintKind::Normal
     };
+
+    if !seed_path.exists() {
+        return load_wallet(&seed_path, key_pass, print_kind);
+    }
 
     let mut v1_migration_path: Option<PathBuf> = None;
     let seed_dir = if seed_path.is_dir() {
@@ -79,23 +110,11 @@ pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
         seed_path = wallet_seed_path;
     }
 
-    let print_kind = if print_seed {
-        PrintKind::Seed
-    } else {
-        PrintKind::Normal
-    };
     load_wallet(&seed_path, key_pass, print_kind)
 }
 
-fn get_keys(seed_path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
-    let base_path = env::current_dir().expect("Failed to get current directory");
-    let path = if seed_path.is_absolute() {
-        seed_path.to_path_buf()
-    } else {
-        base_path.join(seed_path)
-    };
-
-    if path.is_file() {
+fn get_keys(path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
+       if path.is_file() {
         let content = fs::read_to_string(&path).expect("Unable to read file");
 
         let decrypted = match crypto::decrypt(&content, key_pass) {
@@ -121,17 +140,10 @@ fn get_keys(seed_path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
 }
 
 pub fn write_mnemonic(
-    seed_path: &Path,
+    path: &Path,
     key_pass: &str,
     mnemonic: Option<&str>,
 ) -> (String, Keypair) {
-    let base_path = env::current_dir().expect("Failed to get current directory");
-    let path = if seed_path.is_absolute() {
-        seed_path.to_path_buf()
-    } else {
-        base_path.join(seed_path)
-    };
-
     let mnemonic = match mnemonic {
         Some(m) => m.to_string(),
         None => Mnemonic::generate(12).unwrap().to_string(),
@@ -144,7 +156,7 @@ pub fn write_mnemonic(
     let final_path = if path.is_dir() {
         path.join("wallet.seed")
     } else {
-        path
+        path.to_path_buf()
     };
 
     if let Some(parent) = final_path.parent() {
@@ -268,5 +280,99 @@ mod tests {
             keypair_v1.public_key().0,
             "wallet.seed should load to same key as v1 file"
         );
+    }
+
+    #[test]
+    fn test_resolve_seed_path_directory_with_wallet_seed() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_pass = "test_password";
+        let mnemonic = "muscle wing great bounce arctic guess trim celery budget shock march whale";
+        let encrypted = crypto::encrypt_with_imported(mnemonic, key_pass, true);
+
+        let wallet_seed_path = temp_dir.path().join("wallet.seed");
+        fs::write(&wallet_seed_path, &encrypted).unwrap();
+
+        let result = resolve_seed_path(Some(temp_dir.path().to_str().unwrap()));
+        assert_eq!(result, temp_dir.path());
+    }
+
+    #[test]
+    fn test_resolve_seed_path_directory_with_upgradable_seed() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let pubkey_suffix = "a82a0376985e4bdca417ceebc52499664ac78437e5ae074de72907a1b42b643e";
+        let v1_file_name = format!("73723235{}", pubkey_suffix);
+        let v1_path = temp_dir.path().join(&v1_file_name);
+        let mut v1_file = fs::File::create(&v1_path).unwrap();
+        write!(
+            v1_file,
+            "\"muscle wing great bounce arctic guess trim celery budget shock march whale\""
+        )
+        .unwrap();
+
+        let result = resolve_seed_path(Some(temp_dir.path().to_str().unwrap()));
+        assert_eq!(result, temp_dir.path());
+    }
+
+    #[test]
+    fn test_resolve_seed_path_directory_empty() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = resolve_seed_path(Some(temp_dir.path().to_str().unwrap()));
+        assert_eq!(result, temp_dir.path());
+    }
+
+    #[test]
+    fn test_resolve_seed_path_existing_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_pass = "test_password";
+        let mnemonic = "muscle wing great bounce arctic guess trim celery budget shock march whale";
+        let encrypted = crypto::encrypt_with_imported(mnemonic, key_pass, true);
+
+        let seed_file = temp_dir.path().join("myseed");
+        fs::write(&seed_file, &encrypted).unwrap();
+
+        let result = resolve_seed_path(Some(temp_dir.path().join("myseed").to_str().unwrap()));
+        assert_eq!(result, seed_file);
+    }
+
+    #[test]
+    fn test_resolve_seed_path_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let none_file = temp_dir.path().join("nonexistent.seed");
+
+        let result = resolve_seed_path(Some(temp_dir.path().join("nonexistent.seed").to_str().unwrap()));
+        assert_eq!(result, none_file);
+    }
+
+    #[test]
+    fn test_resolve_seed_path_default_with_wallet_seed() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_pass = "test_password";
+        let mnemonic = "muscle wing great bounce arctic guess trim celery budget shock march whale";
+        let encrypted = crypto::encrypt_with_imported(mnemonic, key_pass, true);
+
+        let wallet_seed_path = temp_dir.path().join("wallet.seed");
+        fs::write(&wallet_seed_path, &encrypted).unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&temp_dir).unwrap();
+        let result = resolve_seed_path(None);
+        std::env::set_current_dir(original_cwd).unwrap();
+        assert_eq!(
+            result.clone().canonicalize().unwrap(),
+            wallet_seed_path.clone().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_load_seed_creates_new_if_not_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_pass = "test_password";
+
+        let none_file = temp_dir.path().join("nonexistent.seed");
+        let _result = load_seed(none_file.to_str().unwrap(), key_pass, false);
+        assert!(none_file.exists());
     }
 }

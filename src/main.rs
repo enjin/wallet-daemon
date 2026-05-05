@@ -5,13 +5,11 @@ use crate::substrate_client::EnjinConfig;
 use crate::transaction::TransactionJob;
 use crate::types::{Cli, Commands};
 use crate::wallet::DeriveWalletJob;
-use crate::wallet_loader::load_seed;
+use crate::wallet_loader::{load_seed, resolve_seed_path};
 use clap::Parser;
 use reqwest::header::HeaderMap;
 use std::env;
-use std::path::PathBuf;
 use std::process::exit;
-use std::str::FromStr;
 use subxt::OfflineClient;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -38,16 +36,8 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let seed_path = dotenvy::var("SEED_PATH").unwrap_or_else(|_| {
-        let cwd = env::current_dir().expect("Failed to get current directory");
-        if cwd.join("wallet.seed").is_file() {
-            cwd.to_string_lossy().to_string()
-        } else if cwd.join("store").is_dir() {
-            "store".to_string()
-        } else {
-            cwd.to_string_lossy().to_string()
-        }
-    });
+    let seed_path_buf = resolve_seed_path(dotenvy::var("SEED_PATH").ok().as_deref());
+    let seed_path = seed_path_buf.to_string_lossy().to_string();
 
     // check for subcommands
     match Cli::parse().command {
@@ -55,8 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Enjin Platform - Import Wallet");
             let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
             let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
-            let seed_path = PathBuf::from_str(&seed_path).expect("SEED_PATH must be a valid path");
-            importer::write_seed(seed, &seed_path, &key_pass)
+            importer::write_seed(seed, &seed_path_buf, &key_pass)
                 .expect("Failed to import your wallet");
 
             exit(0);
