@@ -152,14 +152,14 @@ pub fn write_mnemonic(
     let final_path = if is_directory {
         path.join("wallet.seed")
     } else if !path.exists() && path.extension().is_none() {
-        fs::create_dir_all(path).ok();
+        fs::create_dir_all(path).expect("Unable to create seed directory");
         path.join("wallet.seed")
     } else {
         path.to_path_buf()
     };
 
     if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent).ok();
+        fs::create_dir_all(parent).expect("Unable to create seed directory");
     }
 
     if !allow_overwrite && final_path.is_file() {
@@ -350,6 +350,24 @@ mod tests {
         assert_eq!(result, none_file);
     }
 
+    struct CwdGuard {
+        original_cwd: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn new() -> Self {
+            Self {
+                original_cwd: std::env::current_dir().unwrap(),
+            }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original_cwd).unwrap();
+        }
+    }
+
     #[test]
     fn test_resolve_seed_path_default_with_wallet_seed() {
         let temp_dir = TempDir::new().unwrap();
@@ -360,10 +378,9 @@ mod tests {
         let wallet_seed_path = temp_dir.path().join("wallet.seed");
         fs::write(&wallet_seed_path, &encrypted).unwrap();
 
-        let original_cwd = std::env::current_dir().unwrap();
+        let _guard = CwdGuard::new();
         std::env::set_current_dir(&temp_dir).unwrap();
         let result = resolve_seed_path(None);
-        std::env::set_current_dir(original_cwd).unwrap();
         assert_eq!(
             result.clone().canonicalize().unwrap(),
             wallet_seed_path.clone().canonicalize().unwrap()

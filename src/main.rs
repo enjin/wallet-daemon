@@ -44,6 +44,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Enjin Platform - Import Wallet");
             if seed_path.is_file() && seed_path.exists() {
                 panic!("importing wallet would overwrite existing file at {seed_path:?}");
+                // TODO: it can also panic if it's a directory. Consider refactoring to also allow
+                // panicking here in that case. Currently, it will panic after password is entered.
             }
             let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
             let seed = rpassword::prompt_password("Please type your 12-word mnemonic: ").unwrap();
