@@ -88,7 +88,7 @@ pub fn load_seed(seed_path: &str, key_pass: &str, print_seed: bool) -> Keypair {
 }
 
 fn get_keys(seed_path: &Path, key_pass: &str, print_seed: bool) -> Keypair {
-    let base_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let base_path = env::current_dir().expect("Failed to get current directory");
     let path = if seed_path.is_absolute() {
         seed_path.to_path_buf()
     } else {
@@ -125,7 +125,7 @@ pub fn write_mnemonic(
     key_pass: &str,
     mnemonic: Option<&str>,
 ) -> (String, Keypair) {
-    let base_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let base_path = env::current_dir().expect("Failed to get current directory");
     let path = if seed_path.is_absolute() {
         seed_path.to_path_buf()
     } else {

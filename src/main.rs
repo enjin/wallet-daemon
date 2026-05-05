@@ -40,7 +40,9 @@ mod wallet_loader;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed_path = dotenvy::var("SEED_PATH").unwrap_or_else(|_| {
         let cwd = env::current_dir().expect("Failed to get current directory");
-        if cwd.join("store").is_dir() {
+        if cwd.join("wallet.seed").is_file() {
+            cwd.to_string_lossy().to_string()
+        } else if cwd.join("store").is_dir() {
             "store".to_string()
         } else {
             cwd.to_string_lossy().to_string()
