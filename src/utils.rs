@@ -56,8 +56,11 @@ where
                                         .map(|(_k, v)| format!("{v}"))
                                         .collect::<Vec<_>>()
                                         .join(",");
-                                    let msg = e.message;
-                                    format!("{}\n    Extensions: {}", msg, ext_str)
+                                    if !ext_str.is_empty() {
+                                        format!("{}\n    Extensions: {}", &e.message, ext_str)
+                                    } else {
+                                        e.message
+                                    }
                                 } else {
                                     e.message
                                 }

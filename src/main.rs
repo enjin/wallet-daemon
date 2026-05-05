@@ -38,7 +38,14 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let seed_path = dotenvy::var("SEED_PATH").unwrap_or("store".to_string());
+    let seed_path = dotenvy::var("SEED_PATH").unwrap_or_else(|_| {
+        let cwd = env::current_dir().expect("Failed to get current directory");
+        if cwd.join("store").is_dir() {
+            "store".to_string()
+        } else {
+            cwd.to_string_lossy().to_string()
+        }
+    });
 
     // check for subcommands
     match Cli::parse().command {
