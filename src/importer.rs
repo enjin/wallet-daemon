@@ -3,7 +3,7 @@ use sp_core::crypto::{Ss58AddressFormat, Ss58Codec};
 use std::path::Path;
 
 pub fn write_seed(seed: String, seed_path: &Path, key_pass: &str) -> std::io::Result<()> {
-    let (_, keypair_tx) = write_mnemonic(seed_path, key_pass, Some(&seed));
+    let (_, keypair_tx) = write_mnemonic(seed_path, key_pass, Some(&seed), false);
 
     let public_key = keypair_tx.public_key().0;
     let account_id = sp_core::crypto::AccountId32::from(public_key);
@@ -53,8 +53,8 @@ mod tests {
 
         write_seed(mnemonic.to_string(), temp_dir.path(), key_pass).unwrap();
 
-        let seed_path = temp_dir.path().to_str().unwrap();
-        let loaded_keypair = load_seed(seed_path, key_pass, true);
+        let seed_path = temp_dir.path().to_path_buf();
+        let loaded_keypair = load_seed(seed_path.clone(), key_pass, true);
         let reloaded_keypair = load_seed(seed_path, key_pass, false);
 
         assert_eq!(
@@ -73,7 +73,7 @@ mod tests {
 
         write_seed(mnemonic.to_string(), temp_dir.path(), key_pass).unwrap();
 
-        let seed_path = temp_dir.path().to_str().unwrap();
+        let seed_path = temp_dir.path().to_path_buf();
         let result = std::panic::catch_unwind(|| load_seed(seed_path, wrong_pass, false));
         assert!(result.is_err(), "wrong password should panic");
     }
@@ -86,7 +86,7 @@ mod tests {
 
         write_seed(mnemonic.to_string(), temp_dir.path(), key_pass).unwrap();
 
-        let keypair = load_seed(temp_dir.path().to_str().unwrap(), key_pass, false);
+        let keypair = load_seed(temp_dir.path().to_path_buf(), key_pass, false);
         let public_key = keypair.public_key().0;
         let account_id = sp_core::crypto::AccountId32::from(public_key);
 
