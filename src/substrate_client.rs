@@ -51,7 +51,6 @@ mod tests {
     use crate::chain_info::get_genesis_hash;
     use crate::transaction::payload::{RawFields, RawPayload};
     use crate::types::{Chain, Network};
-    use hex_literal::hex;
     use parity_scale_codec::{Compact, Encode};
     use std::sync::Arc;
     use subxt::Metadata;
@@ -123,13 +122,47 @@ mod tests {
         OfflineClient::new_with_config(cfg)
     }
 
+    /// Deterministic stand-in for the chain's `system.block_hash(n)` storage.
+    ///
+    /// In production the daemon passes `(block_number, block_hash)` where
+    /// `block_hash` is the hash returned by the node for that block, and the
+    /// runtime, when re-deriving the implicit signing payload, looks up the
+    /// birth block hash via `system.block_hash(birth)`. The verifier in these
+    /// tests must do the same lookup against a stable, block-number-keyed
+    /// source - otherwise a positive test can pass even when the daemon
+    /// committed to a hash that is not actually tied to the birth block.
+    fn block_hash_for(block_n: u64) -> H256 {
+        // Domain-separated so this can never collide with a genesis hash.
+        let mut preimage = [0u8; 40];
+        preimage[..8].copy_from_slice(b"sysblkh:");
+        preimage[8..16].copy_from_slice(&block_n.to_le_bytes());
+        H256::from(sp_crypto_hashing::blake2_256(&preimage))
+    }
+
     /// Mortality parameters used when re-deriving the runtime's view of an
     /// extrinsic during verification.
     #[derive(Clone)]
     struct TestMortality {
         for_n_blocks: u64,
         from_block_n: u64,
+        /// Hash the daemon commits to as the era anchor. In well-formed
+        /// flows this MUST equal `block_hash_for(from_block_n)`; tests that
+        /// want to exercise the "committed hash doesn't match the chain's
+        /// `system.block_hash(birth)`" failure mode can deliberately set it
+        /// to something else.
         from_block_hash: H256,
+    }
+
+    impl TestMortality {
+        /// Well-formed mortality: the committed hash is exactly what the
+        /// chain's `system.block_hash(from_block_n)` would return.
+        fn well_formed(for_n_blocks: u64, from_block_n: u64) -> Self {
+            Self {
+                for_n_blocks,
+                from_block_n,
+                from_block_hash: block_hash_for(from_block_n),
+            }
+        }
     }
 
     /// Test-only parameters mirroring what the daemon feeds into
@@ -276,7 +309,22 @@ mod tests {
             "Extras don't match what we expected to be emitted",
         );
 
-        let implicit = expected_implicit(genesis, params.mortality.from_block_hash);
+        // Mirror what the runtime does at submission time: re-derive the era
+        // birth block from the encoded `Era` + the chain head, then look up
+        // `system.block_hash(birth)` and feed THAT into the implicit. This
+        // ensures we are not just round-tripping whatever synthetic hash the
+        // test happened to pick - we are actually checking that the hash the
+        // daemon committed to corresponds to the era's birth block.
+        //
+        // Within the mortality window the runtime re-derives `birth ==
+        // from_block_n`, so we use the signing block as the "current" head
+        // here. The dedicated `era_anchor_lag_produces_signature_mismatch`
+        // test covers the case where these diverge.
+        let period = era_period_from_raw(params.mortality.for_n_blocks);
+        let phase = era_phase(period, params.mortality.from_block_n);
+        let runtime_birth = era_birth(period, phase, params.mortality.from_block_n);
+        let runtime_era_hash = block_hash_for(runtime_birth);
+        let implicit = expected_implicit(genesis, runtime_era_hash);
 
         let mut to_sign = Vec::with_capacity(call.len() + extra.len() + implicit.len());
         to_sign.extend_from_slice(&call);
@@ -299,13 +347,7 @@ mod tests {
         let params = TestParams {
             nonce: 7,
             tip: 0,
-            mortality: TestMortality {
-                for_n_blocks: 64,
-                from_block_n: 1000,
-                from_block_hash: H256::from(hex!(
-                    "0000000000000000000000000000000000000000000000000000000000000001"
-                )),
-            },
+            mortality: TestMortality::well_formed(64, 1000),
         };
         let payload = remark_payload((b"hello".to_vec()).encode());
         let signed = sign_with_subxt(&client, 1000, &payload, &params, &signer);
@@ -327,13 +369,7 @@ mod tests {
         let params = TestParams {
             nonce: 11,
             tip: 0,
-            mortality: TestMortality {
-                for_n_blocks: 64,
-                from_block_n: 2000,
-                from_block_hash: H256::from(hex!(
-                    "00000000000000000000000000000000000000000000000000000000000000aa"
-                )),
-            },
+            mortality: TestMortality::well_formed(64, 2000),
         };
         let payload = remark_payload((b"canary".to_vec()).encode());
         let signed = sign_with_subxt(&client, 2000, &payload, &params, &signer);
@@ -355,13 +391,7 @@ mod tests {
         let params = TestParams {
             nonce: 0,
             tip: 0,
-            mortality: TestMortality {
-                for_n_blocks: 64,
-                from_block_n: 1,
-                from_block_hash: H256::from(hex!(
-                    "0000000000000000000000000000000000000000000000000000000000000001"
-                )),
-            },
+            mortality: TestMortality::well_formed(64, 1),
         };
         let payload = remark_payload((b"x".to_vec()).encode());
         let signed = sign_with_subxt(&client, 1, &payload, &params, &signer);
@@ -385,13 +415,7 @@ mod tests {
         let params = TestParams {
             nonce: 3,
             tip: 0,
-            mortality: TestMortality {
-                for_n_blocks: 64,
-                from_block_n: 1000,
-                from_block_hash: H256::from(hex!(
-                    "0000000000000000000000000000000000000000000000000000000000000001"
-                )),
-            },
+            mortality: TestMortality::well_formed(64, 1000),
         };
         let payload = remark_payload((b"spec-mismatch".to_vec()).encode());
         let signed = sign_with_subxt(&client, 1000, &payload, &params, &signer);
@@ -430,13 +454,7 @@ mod tests {
         let params = TestParams {
             nonce: 7,
             tip: 0,
-            mortality: TestMortality {
-                for_n_blocks: 64,
-                from_block_n: 1000,
-                from_block_hash: H256::from(hex!(
-                    "0000000000000000000000000000000000000000000000000000000000000001"
-                )),
-            },
+            mortality: TestMortality::well_formed(64, 1000),
         };
         let payload = remark_payload((b"hello".to_vec()).encode());
         let signed = sign_with_subxt(&client, 1000, &payload, &params, &signer);
@@ -444,6 +462,43 @@ mod tests {
             try_verify(&signed, &signer, &params, enjin_matrix_genesis()),
             "Matrix signature failed to verify with V16 metadata - extension \
              layout drift between V14 and V16 metadata?",
+        );
+    }
+
+    /// The daemon must commit to the era anchor hash that the runtime will
+    /// re-derive via `system.block_hash(birth)`. If the daemon instead
+    /// commits to an arbitrary hash that doesn't correspond to the birth
+    /// block, the runtime's reconstructed implicit will use a different hash
+    /// and signature verification must fail.
+    #[test]
+    fn matrix_signature_fails_when_era_hash_is_not_system_block_hash_of_birth() {
+        let metadata = load_enjin_matrix_v14_metadata();
+        let client = build_client(metadata, enjin_matrix_genesis());
+        let signer = sr25519::dev::alice();
+        let from_block_n: u64 = 1000;
+        let real_hash = block_hash_for(from_block_n);
+        // Deliberately commit to a hash that is NOT what
+        // `system.block_hash(from_block_n)` would return.
+        let bogus_hash = {
+            let mut h = real_hash.0;
+            h[0] ^= 0xFF;
+            H256::from(h)
+        };
+        let params = TestParams {
+            nonce: 1,
+            tip: 0,
+            mortality: TestMortality {
+                for_n_blocks: 64,
+                from_block_n,
+                from_block_hash: bogus_hash,
+            },
+        };
+        let payload = remark_payload((b"bad-era-hash".to_vec()).encode());
+        let signed = sign_with_subxt(&client, from_block_n, &payload, &params, &signer);
+        assert!(
+            !try_verify(&signed, &signer, &params, enjin_matrix_genesis()),
+            "Verification must fail when the daemon commits to a mortality \
+             anchor hash that does not match system.block_hash(birth)",
         );
     }
 
