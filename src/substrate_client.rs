@@ -9,18 +9,6 @@ pub struct EnjinConfig {
     pub config: SubstrateConfig,
 }
 
-// if there is a problem in the future, consider using enjin tx extension
-// type EnjinTxExtensions<T> = (
-//     transaction_extensions::VerifySignature<T>,
-//     transaction_extensions::CheckSpecVersion,
-//     transaction_extensions::CheckTxVersion,
-//     transaction_extensions::CheckGenesis<T>,
-//     transaction_extensions::CheckMortality<T>,
-//     transaction_extensions::CheckMetadataHash,
-//     transaction_extensions::CheckNonce,
-//     transaction_extensions::ChargeTransactionPayment,
-// );
-
 impl Config for EnjinConfig {
     type AccountId = <PolkadotConfig as Config>::AccountId;
     type Address = <PolkadotConfig as Config>::Address;
@@ -63,7 +51,7 @@ mod tests {
     use crate::chain_info::get_genesis_hash;
     use crate::types::{Chain, Network};
     use hex_literal::hex;
-    use parity_scale_codec::{Compact, Decode, Encode};
+    use parity_scale_codec::{Compact, Encode};
     use scale_encode::{EncodeAsFields, FieldIter};
     use std::sync::Arc;
     use subxt::Metadata;
@@ -389,9 +377,6 @@ mod tests {
     }
 
     /// Re-run the matrix signing flow but with V16 metadata in place of V14.
-    /// V14 and V16 metadata for Enjin Matrix declare the same transaction
-    /// extension list (proven empirically by inspection during the 1010 bug
-    /// investigation); this test guards that property.
     #[test]
     fn matrix_signed_extrinsic_verifies_with_v16_metadata() {
         let metadata = load_enjin_matrix_v16_metadata();
@@ -432,8 +417,7 @@ mod tests {
         (current.max(phase) - phase) / period * period + phase
     }
 
-    /// Pure mechanism test: for the historical `TX_MORTALITY = 64`, the era
-    /// is built off (signing_block_n, signing_block_hash). If the chain's
+    /// The era is built off (signing_block_n, signing_block_hash). If the chain's
     /// current head at submission time is more than `period` ahead, the
     /// runtime's re-derived `birth` block number is different from the
     /// daemon's signing block. The chain's `system.block_hash(birth)` is
