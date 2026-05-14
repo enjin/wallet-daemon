@@ -96,15 +96,24 @@ mod tests {
     }
 
     fn build_client(metadata: Arc<Metadata>, genesis: [u8; 32]) -> OfflineClient<EnjinConfig> {
+        build_client_with_versions(metadata, genesis, SPEC_VERSION, TX_VERSION)
+    }
+
+    fn build_client_with_versions(
+        metadata: Arc<Metadata>,
+        genesis: [u8; 32],
+        spec_version: u32,
+        tx_version: u32,
+    ) -> OfflineClient<EnjinConfig> {
         let genesis = H256::from(genesis);
         let ranges = vec![SpecVersionForRange {
             block_range: 0..u64::MAX,
-            spec_version: SPEC_VERSION,
-            transaction_version: TX_VERSION,
+            spec_version,
+            transaction_version: tx_version,
         }];
         let inner = SubstrateConfig::builder()
             .set_spec_version_for_block_ranges(ranges)
-            .set_metadata_for_spec_versions([(SPEC_VERSION, metadata)])
+            .set_metadata_for_spec_versions([(spec_version, metadata)])
             .set_genesis_hash(genesis)
             .build();
         let cfg = EnjinConfig {
@@ -170,8 +179,13 @@ mod tests {
     /// Decode the v4 envelope. Returns `(tail_bytes_with_extra_and_call, signature, address_pk)`.
     fn decode_v4_envelope(signed: &[u8]) -> (Vec<u8>, sr25519::Signature, [u8; 32]) {
         let mut s = signed;
-        let _len: Compact<u64> =
+        let len: Compact<u64> =
             <Compact<u64> as parity_scale_codec::Decode>::decode(&mut s).expect("len prefix");
+        assert_eq!(
+            len.0 as usize,
+            s.len(),
+            "compact length prefix does not match remaining extrinsic bytes"
+        );
 
         let version = s[0];
         s = &s[1..];
@@ -354,6 +368,56 @@ mod tests {
         assert!(
             !try_verify(&signed, &signer, &params, enjin_matrix_genesis()),
             "Verification must fail when the runtime's genesis hash differs",
+        );
+    }
+
+    #[test]
+    fn matrix_signature_fails_when_runtime_versions_differ() {
+        let metadata = load_enjin_matrix_v14_metadata();
+        // Client signs with deliberately wrong runtime versions...
+        let client = build_client_with_versions(
+            metadata,
+            enjin_matrix_genesis(),
+            SPEC_VERSION + 1,
+            TX_VERSION,
+        );
+        let signer = sr25519::dev::alice();
+        let params = TestParams {
+            nonce: 3,
+            tip: 0,
+            mortality: TestMortality {
+                for_n_blocks: 64,
+                from_block_n: 1000,
+                from_block_hash: H256::from(hex!(
+                    "0000000000000000000000000000000000000000000000000000000000000001"
+                )),
+            },
+        };
+        let payload = remark_payload((b"spec-mismatch".to_vec()).encode());
+        let signed = sign_with_subxt(&client, 1000, &payload, &params, &signer);
+        // ...but verification reconstructs the payload using the "real"
+        // SPEC_VERSION/TX_VERSION constants (via expected_implicit), so the
+        // signed message and the verifier's reconstructed message disagree.
+        assert!(
+            !try_verify(&signed, &signer, &params, enjin_matrix_genesis()),
+            "Verification must fail when spec_version differs between signing \
+             and runtime payload reconstruction",
+        );
+
+        // And the symmetric case for transaction_version.
+        let metadata = load_enjin_matrix_v14_metadata();
+        let client = build_client_with_versions(
+            metadata,
+            enjin_matrix_genesis(),
+            SPEC_VERSION,
+            TX_VERSION + 1,
+        );
+        let payload = remark_payload((b"tx-mismatch".to_vec()).encode());
+        let signed = sign_with_subxt(&client, 1000, &payload, &params, &signer);
+        assert!(
+            !try_verify(&signed, &signer, &params, enjin_matrix_genesis()),
+            "Verification must fail when transaction_version differs between \
+             signing and runtime payload reconstruction",
         );
     }
 
