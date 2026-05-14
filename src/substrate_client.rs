@@ -49,16 +49,15 @@ impl Config for EnjinConfig {
 mod tests {
     use super::*;
     use crate::chain_info::get_genesis_hash;
+    use crate::transaction::payload::{RawFields, RawPayload};
     use crate::types::{Chain, Network};
     use hex_literal::hex;
     use parity_scale_codec::{Compact, Encode};
-    use scale_encode::{EncodeAsFields, FieldIter};
     use std::sync::Arc;
     use subxt::Metadata;
     use subxt::OfflineClient;
     use subxt::config::DefaultExtrinsicParamsBuilder;
     use subxt::config::substrate::SpecVersionForRange;
-    use subxt::error::EncodeError;
     use subxt::tx::Payload;
     use subxt::utils::Era;
     use subxt_signer::sr25519;
@@ -84,7 +83,7 @@ mod tests {
         Arc::new(Metadata::decode_from(&bytes).expect("decode metadata"))
     }
 
-    fn load_metadata() -> Arc<Metadata> {
+    fn load_enjin_matrix_v14_metadata() -> Arc<Metadata> {
         load_metadata_from("enjin_matrix_metadata.scale")
     }
 
@@ -160,29 +159,11 @@ mod tests {
         signed.into_encoded()
     }
 
-    struct RawFields(Vec<u8>);
-    impl EncodeAsFields for RawFields {
-        fn encode_as_fields_to<R: scale_encode::TypeResolver>(
-            &self,
-            _fields: &mut dyn FieldIter<'_, R::TypeId>,
-            _types: &R,
-            out: &mut Vec<u8>,
-        ) -> Result<(), EncodeError> {
-            out.extend_from_slice(&self.0);
-            Ok(())
-        }
-    }
-    struct RemarkPayload(RawFields);
-    impl Payload for RemarkPayload {
-        type CallData = RawFields;
-        fn pallet_name(&self) -> &str {
-            "System"
-        }
-        fn call_name(&self) -> &str {
-            "remark"
-        }
-        fn call_data(&self) -> &RawFields {
-            &self.0
+    fn remark_payload(bytes: Vec<u8>) -> RawPayload {
+        RawPayload {
+            pallet_name: "System".to_string(),
+            call_name: "remark".to_string(),
+            field_bytes: RawFields(bytes),
         }
     }
 
@@ -298,7 +279,7 @@ mod tests {
 
     #[test]
     fn matrix_signed_extrinsic_verifies() {
-        let metadata = load_metadata();
+        let metadata = load_enjin_matrix_v14_metadata();
         let client = build_client(metadata, enjin_matrix_genesis());
         let signer = sr25519::dev::alice();
         let params = TestParams {
@@ -312,7 +293,7 @@ mod tests {
                 )),
             },
         };
-        let payload = RemarkPayload(RawFields((b"hello".to_vec()).encode()));
+        let payload = remark_payload((b"hello".to_vec()).encode());
         let signed = sign_with_subxt(&client, 1000, &payload, &params, &signer);
         assert!(
             try_verify(&signed, &signer, &params, enjin_matrix_genesis()),
@@ -340,7 +321,7 @@ mod tests {
                 )),
             },
         };
-        let payload = RemarkPayload(RawFields((b"canary".to_vec()).encode()));
+        let payload = remark_payload((b"canary".to_vec()).encode());
         let signed = sign_with_subxt(&client, 2000, &payload, &params, &signer);
         assert!(
             try_verify(&signed, &signer, &params, canary_matrix_genesis()),
@@ -353,7 +334,7 @@ mod tests {
         // Build a client with a deliberately incorrect genesis. The daemon
         // commits to that wrong genesis in its signing payload, so external
         // reconstruction with the real genesis must fail to verify.
-        let metadata = load_metadata();
+        let metadata = load_enjin_matrix_v14_metadata();
         let wrong_genesis = [0xAA; 32];
         let client = build_client(metadata, wrong_genesis);
         let signer = sr25519::dev::alice();
@@ -368,7 +349,7 @@ mod tests {
                 )),
             },
         };
-        let payload = RemarkPayload(RawFields((b"x".to_vec()).encode()));
+        let payload = remark_payload((b"x".to_vec()).encode());
         let signed = sign_with_subxt(&client, 1, &payload, &params, &signer);
         assert!(
             !try_verify(&signed, &signer, &params, enjin_matrix_genesis()),
@@ -393,7 +374,7 @@ mod tests {
                 )),
             },
         };
-        let payload = RemarkPayload(RawFields((b"hello".to_vec()).encode()));
+        let payload = remark_payload((b"hello".to_vec()).encode());
         let signed = sign_with_subxt(&client, 1000, &payload, &params, &signer);
         assert!(
             try_verify(&signed, &signer, &params, enjin_matrix_genesis()),

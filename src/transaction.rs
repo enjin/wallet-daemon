@@ -23,7 +23,7 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
-mod payload {
+pub(crate) mod payload {
     use crate::global;
     use crate::types::{Chain, Network};
     use scale_encode::{EncodeAsFields, FieldIter, TypeResolver};
