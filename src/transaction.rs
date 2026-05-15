@@ -23,6 +23,11 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
+/// Cache key for the nonce tracker. Includes `(Network, Chain)` so the same
+/// signing account is tracked independently on every chain it can submit to.
+type NonceCacheKey = (String, Network, Chain);
+type NonceCache = Arc<Mutex<LruCache<NonceCacheKey, u64>>>;
+
 mod payload {
     use crate::global;
     use crate::types::{Chain, Network};
@@ -228,7 +233,7 @@ impl TransactionProcessor {
 
     async fn transaction_handler(
         keypair: Keypair,
-        nonce_tracker: Arc<Mutex<LruCache<String, u64>>>,
+        nonce_tracker: NonceCache,
         requests: Vec<TransactionRequest>,
     ) {
         let mut inputs = Vec::with_capacity(requests.len());
@@ -303,14 +308,15 @@ impl TransactionProcessor {
             let correct_nonce: u64;
             {
                 let mut tracker = nonce_tracker.lock().unwrap();
-                let latest_nonce = tracker.get(&public_key).unwrap_or(&0u64);
-                correct_nonce = *latest_nonce.max(&chain_nonce);
+                let cache_key = (public_key.clone(), network, chain);
+                let latest_nonce = tracker.get(&cache_key).copied().unwrap_or(0_u64);
+                correct_nonce = compute_next_nonce(latest_nonce, chain_nonce);
                 let acc_format = trim_account(public_key.clone());
                 tracing::info!(
-                    "Acc: {acc_format} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}",
+                    "Acc: {acc_format} - Network: {network:?} - Chain: {chain:?} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}",
                     correct_nonce + 1
                 );
-                tracker.put(public_key.clone(), correct_nonce + 1);
+                tracker.put(cache_key, correct_nonce + 1);
             }
 
             if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
@@ -465,7 +471,7 @@ impl TransactionProcessor {
     }
 
     async fn launch_job_scheduler(mut self) {
-        let nonce_tracker: Arc<Mutex<LruCache<String, u64>>> =
+        let nonce_tracker: NonceCache =
             Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
 
         while let Some(requests) = self.receiver.recv().await {
@@ -484,4 +490,88 @@ impl TransactionProcessor {
 
 fn trim_account(account: String) -> String {
     format!("0x{}...{}", &account[..4], &account[60..])
+}
+
+/// Select the nonce to use for the next transaction signing, given the last
+/// cached value and the latest on-chain value. Local cache wins when ahead
+/// (catches multiple in-flight txs), the chain wins when ahead (recovers from
+/// daemon restarts or out-of-band txs).
+fn compute_next_nonce(cached_nonce: u64, chain_nonce: u64) -> u64 {
+    cached_nonce.max(chain_nonce)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for cross-chain nonce bleed.
+    #[test]
+    fn nonce_tracker_isolates_enjin_and_canary_matrix() {
+        let cache: NonceCache =
+            Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
+
+        let pubkey = "deadbeef".to_string();
+
+        // Simulate signing 6 txs on Enjin Matrix starting from on-chain nonce 0.
+        // After this, the cache for (pubkey, Enjin, Matrix) should hold 6.
+        {
+            let mut tracker = cache.lock().unwrap();
+            let key = (pubkey.clone(), Network::Enjin, Chain::Matrix);
+            for expected in 0..6u64 {
+                let cached = tracker.get(&key).copied().unwrap_or(0);
+                let chain_nonce = 0u64; // on-chain hasn't caught up yet
+                let used = compute_next_nonce(cached, chain_nonce);
+                assert_eq!(used, expected, "enjin matrix nonce drift");
+                tracker.put(key.clone(), used + 1);
+            }
+        }
+
+        // Now a tx arrives for the SAME account on Canary Matrix.
+        // Canary's on-chain nonce for this account is 0. Before the fix this
+        // would have signed with nonce 6 (the leaked Enjin value). After the
+        // fix it must sign with 0.
+        {
+            let mut tracker = cache.lock().unwrap();
+            let canary_key = (pubkey.clone(), Network::Canary, Chain::Matrix);
+            let cached = tracker.get(&canary_key).copied().unwrap_or(0);
+            assert_eq!(
+                cached, 0,
+                "canary matrix cache must not see enjin matrix nonces"
+            );
+            let used = compute_next_nonce(cached, 0);
+            assert_eq!(used, 0, "canary matrix should start at on-chain nonce 0");
+            tracker.put(canary_key, used + 1);
+        }
+
+        // Enjin Matrix state must be untouched by the Canary write.
+        {
+            let tracker = cache.lock().unwrap();
+            let enjin_key = (pubkey.clone(), Network::Enjin, Chain::Matrix);
+            assert_eq!(tracker.peek(&enjin_key).copied(), Some(6));
+        }
+
+        // And Matrix vs. Relay on the same network must also be independent.
+        {
+            let mut tracker = cache.lock().unwrap();
+            let enjin_relay_key = (pubkey.clone(), Network::Enjin, Chain::Relay);
+            let cached = tracker.get(&enjin_relay_key).copied().unwrap_or(0);
+            assert_eq!(cached, 0, "enjin relay must be isolated from enjin matrix");
+            let used = compute_next_nonce(cached, 0);
+            assert_eq!(used, 0);
+            tracker.put(enjin_relay_key, used + 1);
+
+            let enjin_matrix_key = (pubkey, Network::Enjin, Chain::Matrix);
+            assert_eq!(tracker.peek(&enjin_matrix_key).copied(), Some(6));
+        }
+    }
+
+    #[test]
+    fn compute_next_nonce_prefers_higher_of_cache_or_chain() {
+        // Cache ahead of chain (multiple in-flight txs): trust cache.
+        assert_eq!(compute_next_nonce(5, 2), 5);
+        // Chain ahead of cache (daemon restart or out-of-band tx): trust chain.
+        assert_eq!(compute_next_nonce(2, 5), 5);
+        // Equal: either is fine.
+        assert_eq!(compute_next_nonce(3, 3), 3);
+    }
 }
