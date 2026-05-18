@@ -104,7 +104,7 @@ pub async fn get_block_and_spec_version(
 }
 
 /// Get the genesis hash for a network and chain
-fn get_genesis_hash(network: Network, chain: Chain) -> H256 {
+pub(crate) fn get_genesis_hash(network: Network, chain: Chain) -> H256 {
     H256::from(match (network, chain) {
         (Network::Canary, Chain::Relay) => {
             hex!("735d8773c63e74ff8490fee5751ac07e15bfe2b3b5263be4d683c48dbdfbcd15")
