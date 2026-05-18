@@ -1,0 +1,24 @@
+name: Test
+on:
+  push:
+
+jobs:
+  test:
+    name: Cargo Test
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo builds
+        uses: swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config perl nasm
+
+      - name: Run cargo test
+        run: cargo test --all-features --workspace
