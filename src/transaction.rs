@@ -28,7 +28,7 @@ const TRANSACTION_PAGE_SIZE: i64 = 25;
 type NonceCacheKey = (String, Network, Chain);
 type NonceCache = Arc<Mutex<LruCache<NonceCacheKey, u64>>>;
 
-mod payload {
+pub(crate) mod payload {
     use crate::global;
     use crate::types::{Chain, Network};
     use scale_encode::{EncodeAsFields, FieldIter, TypeResolver};
