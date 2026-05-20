@@ -16,7 +16,7 @@ use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
-use tokio::time::interval;
+use tokio::time::sleep;
 
 const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
@@ -180,8 +180,6 @@ impl TransactionJob {
     }
 
     async fn start_polling(&self) {
-        let mut interval = interval(Duration::from_millis(TRANSACTION_POLLER_MS));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut no_transaction_count = 0;
         // Set of (network, chain) pairs we've ever delivered a batch for. Used
         // to compute the `idle` set: chains we've seen before but didn't see
@@ -190,9 +188,10 @@ impl TransactionJob {
         let mut seen_chains: HashSet<ChainKey> = HashSet::new();
 
         loop {
-            interval.tick().await;
-
-            match self.get_pending_transactions().await {
+            // Only sleep when there is no work to do (or on error). When a
+            // batch was successfully delivered, we immediately poll again to
+            // drain any remaining backlog.
+            let should_sleep = match self.get_pending_transactions().await {
                 Ok(transaction_reqs) => {
                     let active: HashSet<ChainKey> = transaction_reqs
                         .iter()
@@ -210,6 +209,7 @@ impl TransactionJob {
                         tracing::info!("Error sending transaction requests: {:?}", e);
                     }
                     no_transaction_count = 0;
+                    false
                 }
                 Err(e) => {
                     if e.to_string() == NO_TRANSACTIONS_MSG {
@@ -233,7 +233,12 @@ impl TransactionJob {
                     } else {
                         tracing::error!("Error: {}", e);
                     }
+                    true
                 }
+            };
+
+            if should_sleep {
+                sleep(Duration::from_millis(TRANSACTION_POLLER_MS)).await;
             }
         }
     }
