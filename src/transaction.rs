@@ -15,6 +15,7 @@ use subxt::utils::H256;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
@@ -42,9 +43,19 @@ type BlockInfo = (u32, H256, u32);
 /// batch for those chains re-reads the on-chain nonce from scratch. This
 /// prevents long-term cross-batch nonce desync while letting back-to-back
 /// batches reuse the in-memory counter.
+///
+/// `ack` is a one-shot channel the consumer signals once it has fully
+/// finished processing this tick — including the round-trip to the platform
+/// `SignTransactions` mutation. The producer awaits this ack before issuing
+/// the next `GetPendingTransactions` call. This is the backpressure
+/// mechanism that prevents the producer from racing ahead of the consumer
+/// and re-fetching uuids that are still queued for signing (which would
+/// cause the same uuid to be signed multiple times with consecutive
+/// nonces).
 pub struct ProcessorTick {
     batch: Vec<TransactionRequest>,
     idle: HashSet<ChainKey>,
+    ack: oneshot::Sender<()>,
 }
 
 pub(crate) mod payload {
@@ -165,7 +176,13 @@ impl TransactionJob {
     }
 
     pub fn create_job(keypair: Keypair) -> (TransactionJob, TransactionProcessor) {
-        let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
+        // Capacity 1: combined with `send().await` on the producer side and
+        // a per-tick `oneshot` ack from the consumer, this enforces "at most
+        // one tick in flight at a time." The producer cannot issue a new
+        // `GetPendingTransactions` until the consumer has both pulled the
+        // previous tick AND signaled completion of `SignTransactions` for
+        // it. See `ProcessorTick` for the rationale.
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
 
         (
             TransactionJob::new(sender),
@@ -188,28 +205,45 @@ impl TransactionJob {
         let mut seen_chains: HashSet<ChainKey> = HashSet::new();
 
         loop {
-            // Only sleep when there is no work to do (or on error). When a
-            // batch was successfully delivered, we immediately poll again to
-            // drain any remaining backlog.
+            // Sleep when there is no work to do (or on error). When a
+            // non-empty batch was successfully delivered, we immediately
+            // re-poll to catch any transactions that were added to the
+            // queue while we were signing the previous batch (signing can
+            // take several seconds; pagination already drained the visible
+            // backlog in a single call, so this re-poll is purely about
+            // picking up newly-arrived work).
+            //
+            // Critically, we await the consumer's ack between sending a
+            // tick and the next poll. Without that, the producer can race
+            // ahead and re-fetch the same uuid multiple times before the
+            // consumer has submitted the corresponding `SignTransactions`
+            // mutation, causing the same uuid to be signed with consecutive
+            // nonces and rejected by the platform.
             let should_sleep = match self.get_pending_transactions().await {
                 Ok(transaction_reqs) => {
-                    let active: HashSet<ChainKey> = transaction_reqs
-                        .iter()
-                        .map(|r| (r.network, r.chain))
-                        .collect();
-                    let idle: HashSet<ChainKey> =
-                        seen_chains.difference(&active).copied().collect();
-                    seen_chains.extend(active.iter().copied());
+                    // Treat an empty `Ok` (e.g. every item on page 1 failed
+                    // `TryFrom`) the same as `NO_TRANSACTIONS_MSG`: back off
+                    // instead of busy-looping on a broken-data condition.
+                    if transaction_reqs.is_empty() {
+                        if !seen_chains.is_empty() {
+                            self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
+                                .await;
+                        }
+                        true
+                    } else {
+                        let active: HashSet<ChainKey> = transaction_reqs
+                            .iter()
+                            .map(|r| (r.network, r.chain))
+                            .collect();
+                        let idle: HashSet<ChainKey> =
+                            seen_chains.difference(&active).copied().collect();
+                        seen_chains.extend(active.iter().copied());
 
-                    let tick = ProcessorTick {
-                        batch: transaction_reqs,
-                        idle,
-                    };
-                    if let Err(e) = self.sender.try_send(tick) {
-                        tracing::info!("Error sending transaction requests: {:?}", e);
+                        self.send_tick_and_wait(transaction_reqs, idle, "transaction requests")
+                            .await;
+                        no_transaction_count = 0;
+                        false
                     }
-                    no_transaction_count = 0;
-                    false
                 }
                 Err(e) => {
                     if e.to_string() == NO_TRANSACTIONS_MSG {
@@ -222,13 +256,8 @@ impl TransactionJob {
                         // tick. Send an empty-batch tick so the consumer can
                         // evict their cache entries.
                         if !seen_chains.is_empty() {
-                            let tick = ProcessorTick {
-                                batch: Vec::new(),
-                                idle: seen_chains.clone(),
-                            };
-                            if let Err(e) = self.sender.try_send(tick) {
-                                tracing::info!("Error sending idle tick: {:?}", e);
-                            }
+                            self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
+                                .await;
                         }
                     } else {
                         tracing::error!("Error: {}", e);
@@ -243,35 +272,116 @@ impl TransactionJob {
         }
     }
 
+    /// Push a `ProcessorTick` into the channel and block until the consumer
+    /// signals it has finished processing it. This is the single
+    /// synchronization point between producer and consumer that prevents
+    /// duplicate signing of the same uuid (see `ProcessorTick` docs and the
+    /// loop comment in `start_polling`).
+    ///
+    /// `kind` is a short label used only in error logs to distinguish the
+    /// three send sites ("transaction requests" vs "idle tick").
+    ///
+    /// Failure modes are logged and swallowed — there is no point bubbling
+    /// them up because the polling loop has nowhere useful to send them and
+    /// must keep running. If `send().await` fails, the consumer task has
+    /// died, in which case the daemon is in a broken state regardless. If
+    /// the ack channel is dropped without being signaled, the consumer
+    /// finished without acknowledging (this should not happen — the
+    /// consumer always sends the ack on the way out of every tick branch);
+    /// log and proceed so the producer can keep polling.
+    async fn send_tick_and_wait(
+        &self,
+        batch: Vec<TransactionRequest>,
+        idle: HashSet<ChainKey>,
+        kind: &str,
+    ) {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let tick = ProcessorTick {
+            batch,
+            idle,
+            ack: ack_tx,
+        };
+        if let Err(e) = self.sender.send(tick).await {
+            tracing::error!("Failed to send {kind} to processor: {e:?}");
+            return;
+        }
+        if let Err(e) = ack_rx.await {
+            tracing::warn!("Processor dropped ack for {kind} without signaling: {e:?}");
+        }
+    }
+
     async fn get_pending_transactions(
         &self,
     ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let response_data = utils::execute_query::<GetPendingTransactions>(
-            get_pending_transactions::Variables {
-                limit: TRANSACTION_PAGE_SIZE,
-                cursor: None,
-            },
-            None,
-        )
-        .await?;
+        let mut all: Vec<TransactionRequest> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut page_index: usize = 0;
 
-        let transactions_req = response_data.result.ok_or(NO_TRANSACTIONS_MSG)?.data;
+        loop {
+            let response_data = utils::execute_query::<GetPendingTransactions>(
+                get_pending_transactions::Variables {
+                    limit: TRANSACTION_PAGE_SIZE,
+                    cursor: cursor.clone(),
+                },
+                None,
+            )
+            .await?;
 
-        if transactions_req.is_empty() {
-            return Err(NO_TRANSACTIONS_MSG.into());
-        }
+            let result = match response_data.result {
+                Some(r) => r,
+                None => {
+                    // First page: no result at all -> nothing pending.
+                    // Later page: server gave us a `nextCursor` but then
+                    // returned no result; treat as end-of-stream.
+                    if page_index == 0 {
+                        return Err(NO_TRANSACTIONS_MSG.into());
+                    }
+                    break;
+                }
+            };
 
-        Ok(transactions_req
-            .into_iter()
-            .filter_map(|p| {
+            let page = result.data;
+            let next_cursor = result.next_cursor;
+            let page_len = page.len();
+
+            if page_index == 0 && page.is_empty() {
+                return Err(NO_TRANSACTIONS_MSG.into());
+            }
+
+            all.extend(page.into_iter().filter_map(|p| {
                 TransactionRequest::try_from(p)
                     .map_err(|e| {
                         tracing::error!("Error creating TransactionRequest: {}", e);
                         e
                     })
                     .ok()
-            })
-            .collect())
+            }));
+
+            tracing::debug!(
+                "GetPendingTransactions: fetched page {} ({} items, total so far: {}), next_cursor present: {}",
+                page_index,
+                page_len,
+                all.len(),
+                next_cursor.is_some(),
+            );
+
+            page_index += 1;
+
+            match next_cursor {
+                Some(c) if !c.is_empty() => cursor = Some(c),
+                _ => break,
+            }
+        }
+
+        if page_index > 1 {
+            tracing::info!(
+                "GetPendingTransactions: drained {} pages, {} transaction(s) total",
+                page_index,
+                all.len(),
+            );
+        }
+
+        Ok(all)
     }
 }
 
@@ -613,7 +723,14 @@ impl TransactionProcessor {
         // `tokio::spawn`ing it) guarantees the previous batch is fully signed
         // and submitted before the next one starts, which is required for
         // correct nonce sequencing.
-        while let Some(ProcessorTick { batch, idle }) = self.receiver.recv().await {
+        //
+        // After processing each tick — including any `SignTransactions`
+        // round-trip in `transaction_handler` — we signal the producer via
+        // the per-tick `ack` channel. The producer blocks on this ack
+        // before issuing the next `GetPendingTransactions`, which is what
+        // prevents the producer from racing ahead and re-fetching uuids
+        // that are still queued for signing.
+        while let Some(ProcessorTick { batch, idle, ack }) = self.receiver.recv().await {
             // Apply idle resets BEFORE processing the batch. By construction
             // the poller never includes a chain in both `batch` and `idle` for
             // the same tick, but applying resets first keeps semantics
@@ -632,6 +749,12 @@ impl TransactionProcessor {
             if !batch.is_empty() {
                 Self::transaction_handler(self.keypair.clone(), &mut self.nonces, batch).await;
             }
+
+            // Always signal the producer, even on an empty batch (idle
+            // ticks still need an ack to release the producer). Failure
+            // here means the producer has already gone away, which would
+            // mean the daemon is shutting down — nothing actionable.
+            let _ = ack.send(());
         }
     }
 
