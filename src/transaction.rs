@@ -149,7 +149,7 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
     fn try_from(
         data: get_pending_transactions::GetPendingTransactionsResultData,
     ) -> Result<Self, Self::Error> {
-        tracing::info!("{:?}", data);
+        tracing::debug!("{:?}", data);
         let external_id = data.wallet.external_id.clone();
 
         Ok(Self {
@@ -460,7 +460,7 @@ impl TransactionProcessor {
                 continue;
             }
 
-            tracing::info!(
+            tracing::debug!(
                 "Prefetched block {block_number} (spec {spec_version}) for {:?}/{:?}",
                 request.network,
                 request.chain,
@@ -493,9 +493,9 @@ impl TransactionProcessor {
             .await
             {
                 Ok(n) => {
-                    tracing::info!(
-                        "Prefetched nonce {n} for acc {} - Network: {:?} - Chain: {:?}",
-                        trim_account(hex::encode(key.2)),
+                    tracing::debug!(
+                        "Prefetched nonce {n} for acc 0x{} - Network: {:?} - Chain: {:?}",
+                        hex::encode(key.2),
                         request.network,
                         request.chain,
                     );
@@ -524,7 +524,6 @@ impl TransactionProcessor {
                 mut payload,
                 fuel_tank_signer_external_id,
             } = request;
-            tracing::info!("Received transaction request: #{request_id}");
 
             let pubkey_bytes = signer.public_key().0;
             let nonce_key: NonceKey = (network, chain, pubkey_bytes);
@@ -553,12 +552,6 @@ impl TransactionProcessor {
                 continue;
             };
 
-            tracing::info!(
-                "Signing transaction #{} with account {}",
-                request_id,
-                hex::encode(pubkey_bytes)
-            );
-
             let Some(nonce_slot) = nonces.get_mut(&nonce_key) else {
                 tracing::error!(
                     "missing pre-fetched nonce for {} on {network:?}/{chain:?}",
@@ -567,10 +560,6 @@ impl TransactionProcessor {
                 continue;
             };
             let correct_nonce = *nonce_slot;
-            tracing::info!(
-                "Acc: {} - Network: {network:?} - Chain: {chain:?} - Using nonce: {correct_nonce}",
-                trim_account(hex::encode(pubkey_bytes)),
-            );
 
             if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
                 // expiration block is needed for the signature
@@ -700,11 +689,10 @@ impl TransactionProcessor {
             let encoded_tx = hex::encode(signed_tx.encoded());
 
             tracing::info!(
-                "Request: #{} - Nonce: {} - Extrinsic: 0x{}",
-                request_id,
-                correct_nonce,
-                encoded_tx
+                "Signed #{request_id} nonce={correct_nonce} account=0x{} network={network:?} chain={chain:?}",
+                hex::encode(pubkey_bytes),
             );
+            tracing::debug!("Signed #{request_id} extrinsic: 0x{encoded_tx}",);
             inputs.push(SignTransactionInput {
                 uuid: request_id.clone(),
                 signed_extrinsic: format!("0x{encoded_tx}"),
@@ -761,10 +749,6 @@ impl TransactionProcessor {
     pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(self.launch_job_scheduler())
     }
-}
-
-fn trim_account(account: String) -> String {
-    format!("0x{}...{}", &account[..4], &account[60..])
 }
 
 /// Derive a signer keypair from `keypair` using `external_id` as a soft

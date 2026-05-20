@@ -30,9 +30,13 @@ pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
 
     match res {
         Ok(r) => {
-            tracing::info!("Response from platform: {:?}", r);
+            tracing::debug!("Response from platform: {:?}", r);
+            tracing::info!(
+                "SignTransactions: {} transaction(s) submitted to platform successfully",
+                uuids.len(),
+            );
             for uuid in uuids {
-                tracing::info!("Signed transaction #{}", uuid);
+                tracing::debug!("Signed transaction #{}", uuid);
             }
         }
         Err(e) => tracing::error!("Error sending SignTransactions: {}", e),
