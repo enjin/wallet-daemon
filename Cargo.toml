@@ -1,6 +1,6 @@
 [package]
 name = "wallet-daemon"
-version = "3.0.4"
+version = "3.0.5"
 edition = "2024"
 
 [[bin]]
@@ -34,7 +34,6 @@ hex = "0.4.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 sp-core = { version = "*", default-features = false, features = ["std"] } # match the version subxt uses
 bip39 = { version = "2.2.0", features = ["rand"] }
-lru = "0.16.0"
 hex-literal = "1.1.0"
 scale-info-legacy = "0.4.2"
 aes-gcm = "0.10.3"

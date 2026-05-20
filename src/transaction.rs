@@ -6,13 +6,12 @@ use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
-use lru::LruCache;
 use parity_scale_codec::Encode;
 use payload::RawPayload;
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
+use subxt::utils::H256;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -23,10 +22,16 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
-/// Cache key for the nonce tracker. Includes `(Network, Chain)` so the same
-/// signing account is tracked independently on every chain it can submit to.
-type NonceCacheKey = (String, Network, Chain);
-type NonceCache = Arc<Mutex<LruCache<NonceCacheKey, u64>>>;
+/// Per-batch nonce map key. Each `(network, chain, signer public key)` tracks
+/// its own counter for the duration of a single batch.
+type NonceKey = (Network, Chain, [u8; 32]);
+
+/// Per-batch chain key for block / metadata prefetch.
+type ChainKey = (Network, Chain);
+
+/// `(block_number, block_hash, spec_version)` captured at prefetch time and
+/// reused for every request signed against that chain in the batch.
+type BlockInfo = (u32, H256, u32);
 
 pub(crate) mod payload {
     use crate::global;
@@ -231,17 +236,115 @@ impl TransactionProcessor {
         Self { keypair, receiver }
     }
 
-    async fn transaction_handler(
-        keypair: Keypair,
-        nonce_tracker: NonceCache,
-        requests: Vec<TransactionRequest>,
-    ) {
+    async fn transaction_handler(keypair: Keypair, requests: Vec<TransactionRequest>) {
+        // Derive the signer for every request up-front so we can both
+        // pre-fetch nonces and reuse the keypair in the main signing loop.
+        let signers: Vec<Keypair> = requests
+            .iter()
+            .map(|r| derive_signer(&keypair, r.external_id.as_deref()))
+            .collect();
+
+        // Pre-fetch per-chain block info and refresh metadata once per
+        // (network, chain) for this batch. If either step fails, the chain is
+        // marked failed and every request targeting it is skipped.
+        let mut block_info: HashMap<ChainKey, BlockInfo> = HashMap::new();
+        let mut failed_chains: HashSet<ChainKey> = HashSet::new();
+        for request in requests.iter() {
+            let key: ChainKey = (request.network, request.chain);
+            if block_info.contains_key(&key) || failed_chains.contains(&key) {
+                continue;
+            }
+
+            let (block_number, block_hash, spec_version) =
+                match chain_info::get_block_and_spec_version(request.network, request.chain).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!(
+                            "could not fetch block number for {:?}/{:?}: {e}; skipping all requests for this chain in this batch",
+                            request.network,
+                            request.chain,
+                        );
+                        failed_chains.insert(key);
+                        continue;
+                    }
+                };
+
+            let needs_update =
+                match global::metadata_spec_version(request.network, request.chain).await {
+                    Some(local) => local < spec_version,
+                    None => true,
+                };
+            if needs_update
+                && let Err(e) =
+                    chain_info::update_metadata_and_substrate_client(request.network, request.chain)
+                        .await
+            {
+                tracing::error!(
+                    "failed to update metadata for {:?}/{:?}: {e}; skipping all requests for this chain in this batch",
+                    request.network,
+                    request.chain,
+                );
+                failed_chains.insert(key);
+                continue;
+            }
+
+            tracing::info!(
+                "Prefetched block {block_number} (spec {spec_version}) for {:?}/{:?}",
+                request.network,
+                request.chain,
+            );
+            block_info.insert(key, (block_number, block_hash, spec_version));
+        }
+
+        // Pre-fetch the starting nonce once per unique (network, chain, signer)
+        // triple in this batch. We assume the platform's `get_account_nonce`
+        // resolver returns `system_accountNextIndex`.
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+        let mut failed_keys: HashSet<NonceKey> = HashSet::new();
+        for (signer, request) in signers.iter().zip(requests.iter()) {
+            // Don't bother fetching a nonce for a chain that already failed
+            // its block / metadata prefetch.
+            if failed_chains.contains(&(request.network, request.chain)) {
+                continue;
+            }
+            let key: NonceKey = (request.network, request.chain, signer.public_key().0);
+            if nonces.contains_key(&key) || failed_keys.contains(&key) {
+                continue;
+            }
+            match chain_info::get_account_nonce(
+                request.network,
+                request.chain,
+                &signer.public_key(),
+            )
+            .await
+            {
+                Ok(n) => {
+                    tracing::info!(
+                        "Prefetched nonce {n} for acc {} - Network: {:?} - Chain: {:?}",
+                        trim_account(hex::encode(key.2)),
+                        request.network,
+                        request.chain,
+                    );
+                    nonces.insert(key, n);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "failed to fetch nonce for {} on {:?}/{:?}: {e}; skipping all requests for this key in this batch",
+                        hex::encode(key.2),
+                        request.network,
+                        request.chain,
+                    );
+                    failed_keys.insert(key);
+                }
+            }
+        }
+
         let mut inputs = Vec::with_capacity(requests.len());
 
-        for request in requests {
+        for (signer, request) in signers.into_iter().zip(requests) {
             let TransactionRequest {
                 request_id,
-                external_id,
+                external_id: _,
                 network,
                 chain,
                 mut payload,
@@ -249,75 +352,51 @@ impl TransactionProcessor {
             } = request;
             tracing::info!("Received transaction request: #{request_id}");
 
-            // get block number
-            let Ok((block_number, block_hash, spec_version)) =
-                chain_info::get_block_and_spec_version(network, chain).await
-            else {
-                tracing::error!("could not fetch block number");
+            let pubkey_bytes = signer.public_key().0;
+            let nonce_key: NonceKey = (network, chain, pubkey_bytes);
+            let chain_key: ChainKey = (network, chain);
+
+            // Skip up-front if the per-chain prefetch failed.
+            if failed_chains.contains(&chain_key) {
+                tracing::error!(
+                    "Skipping request #{request_id}: prefetch failed for {network:?}/{chain:?}"
+                );
                 continue;
-            };
-
-            // check update metadata
-            {
-                let mut update_metadata = false;
-                if let Some(local_spec_version) =
-                    global::metadata_spec_version(network, chain).await
-                {
-                    if local_spec_version < spec_version {
-                        update_metadata = true;
-                    }
-                } else {
-                    update_metadata = true;
-                }
-
-                if update_metadata
-                    && let Err(e) =
-                        chain_info::update_metadata_and_substrate_client(network, chain).await
-                {
-                    tracing::error!("failed to update metadata for {network:?} {chain:?}: {e}");
-                    continue;
-                }
             }
 
-            let signer = if let Some(external_id) = external_id {
-                let derive_junction = match external_id.parse::<i64>() {
-                    Ok(id) => DeriveJunction::soft(id),
-                    Err(_) => DeriveJunction::soft(external_id),
-                };
+            // Skip up-front if the nonce prefetch failed for this key.
+            if failed_keys.contains(&nonce_key) {
+                tracing::error!(
+                    "Skipping request #{request_id}: no prefetched nonce for {}",
+                    hex::encode(pubkey_bytes)
+                );
+                continue;
+            }
 
-                keypair.derive([derive_junction])
-            } else {
-                keypair.clone()
+            let Some(&(block_number, block_hash, _spec_version)) = block_info.get(&chain_key)
+            else {
+                tracing::error!("missing prefetched block info for {network:?}/{chain:?}");
+                continue;
             };
 
             tracing::info!(
                 "Signing transaction #{} with account {}",
                 request_id,
-                hex::encode(signer.public_key().0)
+                hex::encode(pubkey_bytes)
             );
 
-            let public_key = hex::encode(signer.public_key().0);
-            let chain_nonce =
-                match chain_info::get_account_nonce(network, chain, &signer.public_key()).await {
-                    Ok(nonce) => nonce,
-                    Err(e) => {
-                        tracing::error!("failed to fetch nonce for {public_key} with error: {e}");
-                        continue;
-                    }
-                };
-            let correct_nonce: u64;
-            {
-                let mut tracker = nonce_tracker.lock().unwrap();
-                let cache_key = (public_key.clone(), network, chain);
-                let latest_nonce = tracker.get(&cache_key).copied().unwrap_or(0_u64);
-                correct_nonce = compute_next_nonce(latest_nonce, chain_nonce);
-                let acc_format = trim_account(public_key.clone());
-                tracing::info!(
-                    "Acc: {acc_format} - Network: {network:?} - Chain: {chain:?} - Using nonce: {correct_nonce:?} - Cached nonce: {latest_nonce:?} - Metadata nonce: {chain_nonce:?} - Next nonce: {:?}",
-                    correct_nonce + 1
+            let Some(nonce_slot) = nonces.get_mut(&nonce_key) else {
+                tracing::error!(
+                    "missing pre-fetched nonce for {} on {network:?}/{chain:?}",
+                    hex::encode(pubkey_bytes)
                 );
-                tracker.put(cache_key, correct_nonce + 1);
-            }
+                continue;
+            };
+            let correct_nonce = *nonce_slot;
+            tracing::info!(
+                "Acc: {} - Network: {network:?} - Chain: {chain:?} - Using nonce: {correct_nonce}",
+                trim_account(hex::encode(pubkey_bytes)),
+            );
 
             if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
                 // expiration block is needed for the signature
@@ -335,21 +414,12 @@ impl TransactionProcessor {
                 };
 
                 // sign by the fuel tank external id if it exists
-                let signer = if let Some(external_id) = fuel_tank_signer_external_id {
-                    let derive_junction = match external_id.parse::<i64>() {
-                        Ok(id) => DeriveJunction::soft(id),
-                        Err(_) => DeriveJunction::soft(external_id),
-                    };
-
-                    keypair.derive([derive_junction])
-                } else {
-                    keypair.clone()
-                };
-                let signature = sp_core::sr25519::Signature::from_raw(signer.sign(&message).0);
+                let ft_signer = derive_signer(&keypair, fuel_tank_signer_external_id.as_deref());
+                let signature = sp_core::sr25519::Signature::from_raw(ft_signer.sign(&message).0);
                 tracing::info!(
                     "fuel tanks - signed message {} with {} and got signature {}",
                     hex::encode(&message),
-                    hex::encode(signer.public_key().0),
+                    hex::encode(ft_signer.public_key().0),
                     hex::encode(signature)
                 );
 
@@ -466,20 +536,21 @@ impl TransactionProcessor {
                 signed_extrinsic: format!("0x{encoded_tx}"),
                 signed_abandon_extrinsic: dummy_tx.clone(),
             });
+
+            // Only advance the nonce after a tx has been successfully
+            // built, signed, and queued for submission.
+            *nonce_slot += 1;
         }
         platform_client::sign_transactions(inputs).await;
     }
 
     async fn launch_job_scheduler(mut self) {
-        let nonce_tracker: NonceCache =
-            Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
-
+        // Process one batch at a time. Awaiting the handler (rather than
+        // `tokio::spawn`ing it) guarantees the previous batch is fully signed
+        // and submitted before the next one starts, which is required for
+        // correct nonce sequencing.
         while let Some(requests) = self.receiver.recv().await {
-            tokio::spawn(Self::transaction_handler(
-                self.keypair.clone(),
-                Arc::clone(&nonce_tracker),
-                requests,
-            ));
+            Self::transaction_handler(self.keypair.clone(), requests).await;
         }
     }
 
@@ -492,86 +563,105 @@ fn trim_account(account: String) -> String {
     format!("0x{}...{}", &account[..4], &account[60..])
 }
 
-/// Select the nonce to use for the next transaction signing, given the last
-/// cached value and the latest on-chain value. Local cache wins when ahead
-/// (catches multiple in-flight txs), the chain wins when ahead (recovers from
-/// daemon restarts or out-of-band txs).
-fn compute_next_nonce(cached_nonce: u64, chain_nonce: u64) -> u64 {
-    cached_nonce.max(chain_nonce)
+/// Derive a signer keypair from `keypair` using `external_id` as a soft
+/// derivation junction. If `external_id` parses as an `i64` the numeric
+/// junction is used; otherwise the raw string is used. When `external_id`
+/// is `None` the root keypair is returned.
+fn derive_signer(keypair: &Keypair, external_id: Option<&str>) -> Keypair {
+    match external_id {
+        Some(id) => {
+            let junction = match id.parse::<i64>() {
+                Ok(n) => DeriveJunction::soft(n),
+                Err(_) => DeriveJunction::soft(id),
+            };
+            keypair.derive([junction])
+        }
+        None => keypair.clone(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Regression test for cross-chain nonce bleed.
+    /// Within a single batch, a per-batch `HashMap<NonceKey, u64>` must:
+    ///   * issue strictly consecutive nonces for repeat (network, chain, signer)
+    ///     triples, and
+    ///   * keep counters fully isolated across networks and chains for the
+    ///     same signing account.
     #[test]
-    fn nonce_tracker_isolates_enjin_and_canary_matrix() {
-        let cache: NonceCache =
-            Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1_000).unwrap())));
+    fn per_batch_nonce_map_is_consecutive_and_chain_isolated() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
 
-        let pubkey = "deadbeef".to_string();
+        let pubkey = [0xABu8; 32];
+        let enjin_matrix: NonceKey = (Network::Enjin, Chain::Matrix, pubkey);
+        let canary_matrix: NonceKey = (Network::Canary, Chain::Matrix, pubkey);
+        let enjin_relay: NonceKey = (Network::Enjin, Chain::Relay, pubkey);
 
-        // Simulate signing 6 txs on Enjin Matrix starting from on-chain nonce 0.
-        // After this, the cache for (pubkey, Enjin, Matrix) should hold 6.
-        {
-            let mut tracker = cache.lock().unwrap();
-            let key = (pubkey.clone(), Network::Enjin, Chain::Matrix);
-            for expected in 0..6u64 {
-                let cached = tracker.get(&key).copied().unwrap_or(0);
-                let chain_nonce = 0u64; // on-chain hasn't caught up yet
-                let used = compute_next_nonce(cached, chain_nonce);
-                assert_eq!(used, expected, "enjin matrix nonce drift");
-                tracker.put(key.clone(), used + 1);
-            }
+        // Simulate prefetch returning chain-side starting nonces.
+        nonces.insert(enjin_matrix, 0);
+        nonces.insert(canary_matrix, 0);
+        nonces.insert(enjin_relay, 0);
+
+        // Sign 6 txs on Enjin Matrix: nonces 0..6, counter ends at 6.
+        for expected in 0..6u64 {
+            let slot = nonces.get_mut(&enjin_matrix).unwrap();
+            assert_eq!(*slot, expected, "enjin matrix not consecutive");
+            *slot += 1;
         }
+        assert_eq!(nonces[&enjin_matrix], 6);
 
-        // Now a tx arrives for the SAME account on Canary Matrix.
-        // Canary's on-chain nonce for this account is 0. Before the fix this
-        // would have signed with nonce 6 (the leaked Enjin value). After the
-        // fix it must sign with 0.
+        // Same account, different network: must still start at 0.
         {
-            let mut tracker = cache.lock().unwrap();
-            let canary_key = (pubkey.clone(), Network::Canary, Chain::Matrix);
-            let cached = tracker.get(&canary_key).copied().unwrap_or(0);
-            assert_eq!(
-                cached, 0,
-                "canary matrix cache must not see enjin matrix nonces"
-            );
-            let used = compute_next_nonce(cached, 0);
-            assert_eq!(used, 0, "canary matrix should start at on-chain nonce 0");
-            tracker.put(canary_key, used + 1);
+            let slot = nonces.get_mut(&canary_matrix).unwrap();
+            assert_eq!(*slot, 0, "canary matrix must not see enjin matrix nonces");
+            *slot += 1;
         }
+        assert_eq!(nonces[&canary_matrix], 1);
+        assert_eq!(nonces[&enjin_matrix], 6, "enjin matrix must be untouched");
 
-        // Enjin Matrix state must be untouched by the Canary write.
+        // Same account, same network, different chain: also independent.
         {
-            let tracker = cache.lock().unwrap();
-            let enjin_key = (pubkey.clone(), Network::Enjin, Chain::Matrix);
-            assert_eq!(tracker.peek(&enjin_key).copied(), Some(6));
+            let slot = nonces.get_mut(&enjin_relay).unwrap();
+            assert_eq!(*slot, 0, "enjin relay must be isolated from enjin matrix");
+            *slot += 1;
         }
-
-        // And Matrix vs. Relay on the same network must also be independent.
-        {
-            let mut tracker = cache.lock().unwrap();
-            let enjin_relay_key = (pubkey.clone(), Network::Enjin, Chain::Relay);
-            let cached = tracker.get(&enjin_relay_key).copied().unwrap_or(0);
-            assert_eq!(cached, 0, "enjin relay must be isolated from enjin matrix");
-            let used = compute_next_nonce(cached, 0);
-            assert_eq!(used, 0);
-            tracker.put(enjin_relay_key, used + 1);
-
-            let enjin_matrix_key = (pubkey, Network::Enjin, Chain::Matrix);
-            assert_eq!(tracker.peek(&enjin_matrix_key).copied(), Some(6));
-        }
+        assert_eq!(nonces[&enjin_relay], 1);
+        assert_eq!(nonces[&enjin_matrix], 6);
     }
 
+    /// A failed sign/build (modeled here as "do not increment the slot")
+    /// must leave the per-batch counter unchanged so the next successful
+    /// request for the same key reuses that nonce. This exercises the
+    /// "increment only on success" property of the new handler.
     #[test]
-    fn compute_next_nonce_prefers_higher_of_cache_or_chain() {
-        // Cache ahead of chain (multiple in-flight txs): trust cache.
-        assert_eq!(compute_next_nonce(5, 2), 5);
-        // Chain ahead of cache (daemon restart or out-of-band tx): trust chain.
-        assert_eq!(compute_next_nonce(2, 5), 5);
-        // Equal: either is fine.
-        assert_eq!(compute_next_nonce(3, 3), 3);
+    fn nonce_slot_is_not_advanced_on_failure() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+        let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
+        nonces.insert(key, 10);
+
+        // Successful tx: advance.
+        {
+            let slot = nonces.get_mut(&key).unwrap();
+            assert_eq!(*slot, 10);
+            *slot += 1;
+        }
+
+        // Failed tx: do NOT advance (simulates a `continue` in the handler
+        // before the post-push increment).
+        {
+            let slot = nonces.get_mut(&key).unwrap();
+            assert_eq!(*slot, 11);
+            // no `*slot += 1`
+        }
+
+        // Next successful tx reuses 11.
+        {
+            let slot = nonces.get_mut(&key).unwrap();
+            assert_eq!(*slot, 11);
+            *slot += 1;
+        }
+
+        assert_eq!(nonces[&key], 12);
     }
 }
