@@ -33,6 +33,20 @@ type ChainKey = (Network, Chain);
 /// reused for every request signed against that chain in the batch.
 type BlockInfo = (u32, H256, u32);
 
+/// Message sent from the poller to the processor on every poll tick.
+///
+/// `batch` is the (possibly empty) set of transaction requests pulled this
+/// tick. `idle` is the set of `(network, chain)` pairs that the poller has
+/// previously delivered txs for but did **not** see in this tick's response —
+/// the processor uses this to evict their nonce-cache entries so the next
+/// batch for those chains re-reads the on-chain nonce from scratch. This
+/// prevents long-term cross-batch nonce desync while letting back-to-back
+/// batches reuse the in-memory counter.
+pub struct ProcessorTick {
+    batch: Vec<TransactionRequest>,
+    idle: HashSet<ChainKey>,
+}
+
 pub(crate) mod payload {
     use crate::global;
     use crate::types::{Chain, Network};
@@ -142,11 +156,11 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
 
 #[derive(Debug)]
 pub struct TransactionJob {
-    sender: Sender<Vec<TransactionRequest>>,
+    sender: Sender<ProcessorTick>,
 }
 
 impl TransactionJob {
-    pub fn new(sender: Sender<Vec<TransactionRequest>>) -> Self {
+    pub fn new(sender: Sender<ProcessorTick>) -> Self {
         Self { sender }
     }
 
@@ -169,13 +183,30 @@ impl TransactionJob {
         let mut interval = interval(Duration::from_millis(TRANSACTION_POLLER_MS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut no_transaction_count = 0;
+        // Set of (network, chain) pairs we've ever delivered a batch for. Used
+        // to compute the `idle` set: chains we've seen before but didn't see
+        // this tick. The cache for any chain in `idle` will be evicted on the
+        // consumer side.
+        let mut seen_chains: HashSet<ChainKey> = HashSet::new();
 
         loop {
             interval.tick().await;
 
             match self.get_pending_transactions().await {
                 Ok(transaction_reqs) => {
-                    if let Err(e) = self.sender.try_send(transaction_reqs) {
+                    let active: HashSet<ChainKey> = transaction_reqs
+                        .iter()
+                        .map(|r| (r.network, r.chain))
+                        .collect();
+                    let idle: HashSet<ChainKey> =
+                        seen_chains.difference(&active).copied().collect();
+                    seen_chains.extend(active.iter().copied());
+
+                    let tick = ProcessorTick {
+                        batch: transaction_reqs,
+                        idle,
+                    };
+                    if let Err(e) = self.sender.try_send(tick) {
                         tracing::info!("Error sending transaction requests: {:?}", e);
                     }
                     no_transaction_count = 0;
@@ -186,6 +217,19 @@ impl TransactionJob {
                             tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
                         }
                         no_transaction_count += 1;
+
+                        // Empty poll: every chain we've ever seen is idle this
+                        // tick. Send an empty-batch tick so the consumer can
+                        // evict their cache entries.
+                        if !seen_chains.is_empty() {
+                            let tick = ProcessorTick {
+                                batch: Vec::new(),
+                                idle: seen_chains.clone(),
+                            };
+                            if let Err(e) = self.sender.try_send(tick) {
+                                tracing::info!("Error sending idle tick: {:?}", e);
+                            }
+                        }
                     } else {
                         tracing::error!("Error: {}", e);
                     }
@@ -228,15 +272,28 @@ impl TransactionJob {
 
 pub struct TransactionProcessor {
     keypair: Keypair,
-    receiver: Receiver<Vec<TransactionRequest>>,
+    receiver: Receiver<ProcessorTick>,
+    /// Persistent nonce cache. The slot for `(network, chain, signer)` holds
+    /// the next nonce to use for that triple. Survives across batches so that
+    /// back-to-back batches stay in sync; entries are evicted when the poller
+    /// reports a chain has gone idle (see `ProcessorTick::idle`).
+    nonces: HashMap<NonceKey, u64>,
 }
 
 impl TransactionProcessor {
-    pub(crate) fn new(keypair: Keypair, receiver: Receiver<Vec<TransactionRequest>>) -> Self {
-        Self { keypair, receiver }
+    pub(crate) fn new(keypair: Keypair, receiver: Receiver<ProcessorTick>) -> Self {
+        Self {
+            keypair,
+            receiver,
+            nonces: HashMap::new(),
+        }
     }
 
-    async fn transaction_handler(keypair: Keypair, requests: Vec<TransactionRequest>) {
+    async fn transaction_handler(
+        keypair: Keypair,
+        nonces: &mut HashMap<NonceKey, u64>,
+        requests: Vec<TransactionRequest>,
+    ) {
         // Derive the signer for every request up-front so we can both
         // pre-fetch nonces and reuse the keypair in the main signing loop.
         let signers: Vec<Keypair> = requests
@@ -296,10 +353,12 @@ impl TransactionProcessor {
             block_info.insert(key, (block_number, block_hash, spec_version));
         }
 
-        // Pre-fetch the starting nonce once per unique (network, chain, signer)
-        // triple in this batch. We assume the platform's `get_account_nonce`
-        // resolver returns `system_accountNextIndex`.
-        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+        // Seed the persistent nonce cache for any (network, chain, signer)
+        // triple in this batch that doesn't already have an entry. Triples
+        // with an existing cache entry are NOT re-fetched — that's how we
+        // carry the counter across back-to-back batches. The empty-poll
+        // reset (handled in `launch_job_scheduler`) is what eventually
+        // evicts a stale entry when a chain goes quiet.
         let mut failed_keys: HashSet<NonceKey> = HashSet::new();
         for (signer, request) in signers.iter().zip(requests.iter()) {
             // Don't bother fetching a nonce for a chain that already failed
@@ -545,12 +604,29 @@ impl TransactionProcessor {
     }
 
     async fn launch_job_scheduler(mut self) {
-        // Process one batch at a time. Awaiting the handler (rather than
+        // Process one tick at a time. Awaiting the handler (rather than
         // `tokio::spawn`ing it) guarantees the previous batch is fully signed
         // and submitted before the next one starts, which is required for
         // correct nonce sequencing.
-        while let Some(requests) = self.receiver.recv().await {
-            Self::transaction_handler(self.keypair.clone(), requests).await;
+        while let Some(ProcessorTick { batch, idle }) = self.receiver.recv().await {
+            // Apply idle resets BEFORE processing the batch. By construction
+            // the poller never includes a chain in both `batch` and `idle` for
+            // the same tick, but applying resets first keeps semantics
+            // unambiguous if that invariant ever changes.
+            if !idle.is_empty() {
+                let evicted = evict_idle_chains(&mut self.nonces, &idle);
+                if evicted > 0 {
+                    tracing::debug!(
+                        "Reset nonce cache for {} idle chain(s) ({} entries evicted)",
+                        idle.len(),
+                        evicted,
+                    );
+                }
+            }
+
+            if !batch.is_empty() {
+                Self::transaction_handler(self.keypair.clone(), &mut self.nonces, batch).await;
+            }
         }
     }
 
@@ -578,6 +654,16 @@ fn derive_signer(keypair: &Keypair, external_id: Option<&str>) -> Keypair {
         }
         None => keypair.clone(),
     }
+}
+
+/// Drop every nonce-cache entry whose `(network, chain)` is in `idle`. Used
+/// to flush stale counters when the poller reports a chain has gone quiet so
+/// the next batch for that chain re-reads the on-chain nonce. Returns the
+/// number of entries actually evicted.
+fn evict_idle_chains(nonces: &mut HashMap<NonceKey, u64>, idle: &HashSet<ChainKey>) -> usize {
+    let before = nonces.len();
+    nonces.retain(|(net, chain, _), _| !idle.contains(&(*net, *chain)));
+    before - nonces.len()
 }
 
 #[cfg(test)]
@@ -663,5 +749,84 @@ mod tests {
         }
 
         assert_eq!(nonces[&key], 12);
+    }
+
+    /// Cross-batch carry-over: a triple that already has a cache entry from
+    /// a previous batch must NOT be re-seeded when the next batch starts. The
+    /// next batch picks up where the previous one left off.
+    ///
+    /// This mirrors the seed-on-miss check in `transaction_handler`'s nonce
+    /// prefetch (`if nonces.contains_key(&key) || failed_keys.contains(&key)
+    /// { continue; }`). A miss would call out to chain; a hit must short-
+    /// circuit.
+    #[test]
+    fn cache_carry_over_skips_chain_fetch_on_hit() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+        let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
+
+        // Simulate end-of-batch-1 state: 25 txs signed starting at chain
+        // nonce 21, slot now holds 46 (= 21 + 25).
+        nonces.insert(key, 46);
+
+        // Batch 2 starts. The prefetch decision is `nonces.contains_key(&key)`.
+        // A hit means we do NOT fetch from chain; we just reuse the slot.
+        let would_fetch_from_chain = !nonces.contains_key(&key);
+        assert!(
+            !would_fetch_from_chain,
+            "cache hit must not trigger a chain fetch"
+        );
+
+        // The next signed tx in batch 2 must therefore use 46, not 21.
+        let slot = nonces.get_mut(&key).unwrap();
+        assert_eq!(
+            *slot, 46,
+            "batch 2 must continue from where batch 1 left off"
+        );
+        *slot += 1;
+        assert_eq!(nonces[&key], 47);
+    }
+
+    /// Reset-on-idle: when the poller reports a chain went idle, every cache
+    /// entry for that chain (across all signing keys) must be evicted, while
+    /// other chains' entries remain intact.
+    #[test]
+    fn evict_idle_chains_drops_only_matching_chains() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+
+        let alice = [0xAAu8; 32];
+        let bob = [0xBBu8; 32];
+
+        // Two signers active on Enjin Matrix.
+        nonces.insert((Network::Enjin, Chain::Matrix, alice), 5);
+        nonces.insert((Network::Enjin, Chain::Matrix, bob), 9);
+        // One signer active on Enjin Relay.
+        nonces.insert((Network::Enjin, Chain::Relay, alice), 12);
+        // One signer active on Canary Matrix.
+        nonces.insert((Network::Canary, Chain::Matrix, alice), 3);
+
+        // Poller reports: Enjin Matrix went idle this tick.
+        let idle: HashSet<ChainKey> = [(Network::Enjin, Chain::Matrix)].into_iter().collect();
+        evict_idle_chains(&mut nonces, &idle);
+
+        // Both Enjin Matrix entries (Alice + Bob) must be gone.
+        assert!(!nonces.contains_key(&(Network::Enjin, Chain::Matrix, alice)));
+        assert!(!nonces.contains_key(&(Network::Enjin, Chain::Matrix, bob)));
+
+        // Other chains are untouched.
+        assert_eq!(nonces[&(Network::Enjin, Chain::Relay, alice)], 12);
+        assert_eq!(nonces[&(Network::Canary, Chain::Matrix, alice)], 3);
+        assert_eq!(nonces.len(), 2);
+    }
+
+    /// A no-op idle set must not touch anything.
+    #[test]
+    fn evict_idle_chains_empty_set_is_noop() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+        nonces.insert((Network::Enjin, Chain::Matrix, [0u8; 32]), 7);
+
+        evict_idle_chains(&mut nonces, &HashSet::new());
+
+        assert_eq!(nonces[&(Network::Enjin, Chain::Matrix, [0u8; 32])], 7);
+        assert_eq!(nonces.len(), 1);
     }
 }
