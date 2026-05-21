@@ -3,16 +3,31 @@ use crate::types::{Chain, MetadataInfo, Network};
 use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
+use std::time::Duration;
 use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
 use tokio::sync::RwLock;
+
+/// Default per-request timeout for all platform GraphQL calls. Without this,
+/// a hung TCP connection on `sign_transactions` (or any other call) would
+/// stall the transaction poller indefinitely under the ack-based
+/// backpressure scheme — the producer awaits the consumer's ack, the
+/// consumer awaits the platform response, and there is no upper bound on
+/// the platform response. 30s is generous for a normally-fast mutation.
+const PLATFORM_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Mutable
 /// Stores metadata, spec_version, and client
 static METADATA: LazyLock<RwLock<HashMap<(Network, Chain), MetadataInfo>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 /// The graphql client that fetches chain info
-static GRAPHQL_CLIENT: LazyLock<RwLock<reqwest::Client>> =
-    LazyLock::new(|| RwLock::new(reqwest::Client::new()));
+static GRAPHQL_CLIENT: LazyLock<RwLock<reqwest::Client>> = LazyLock::new(|| {
+    RwLock::new(
+        reqwest::Client::builder()
+            .timeout(PLATFORM_HTTP_TIMEOUT)
+            .build()
+            .expect("failed to build platform GraphQL client"),
+    )
+});
 
 // Immutable
 pub(super) static HEADERS: OnceLock<HeaderMap> = OnceLock::new();

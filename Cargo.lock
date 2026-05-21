@@ -2661,15 +2661,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru"
-version = "0.16.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
-dependencies = [
- "hashbrown 0.16.1",
-]
-
-[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4141,7 +4132,7 @@ dependencies = [
  "hex",
  "itertools 0.14.0",
  "log",
- "lru 0.12.5",
+ "lru",
  "parking_lot",
  "pin-project",
  "rand 0.8.5",
@@ -5106,7 +5097,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-daemon"
-version = "3.0.4"
+version = "3.0.5"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5117,7 +5108,6 @@ dependencies = [
  "graphql_client",
  "hex",
  "hex-literal",
- "lru 0.16.3",
  "parity-scale-codec",
  "rand 0.10.0",
  "reqwest",
