@@ -236,14 +236,40 @@ impl TransactionJob {
         // consumer side.
         let mut seen_chains: HashSet<ChainKey> = HashSet::new();
 
+        // Persistent cursor for `GetPendingTransactions`. We pass the
+        // cursor we received on the previous successful poll back to the
+        // platform on the next poll. The platform uses the cursor as a
+        // backend pagination/scan hint, so providing it lets the server
+        // skip work it has already returned to us. Each `Ok` page we
+        // receive is capped at `TRANSACTION_PAGE_SIZE = 25` (the
+        // server-side `limit` parameter), and we deliver exactly one
+        // page per tick — that is what enforces the per-batch cap of
+        // 25 on the consumer side, and therefore on the
+        // `SignTransactions` mutation.
+        //
+        // We reset the cursor to `None` whenever a poll does not
+        // successfully advance us (empty result, `NO_TRANSACTIONS_MSG`,
+        // or any other error). The cursor is only meaningful relative
+        // to a server-side scan that is still in progress; once we go
+        // quiet, we should rejoin the stream from the beginning on our
+        // next poll.
+        let mut cursor: Option<String> = None;
+
         loop {
             // Sleep when there is no work to do (or on error). When a
-            // non-empty batch was successfully delivered, we immediately
-            // re-poll to catch any transactions that were added to the
-            // queue while we were signing the previous batch (signing can
-            // take several seconds; pagination already drained the visible
-            // backlog in a single call, so this re-poll is purely about
-            // picking up newly-arrived work).
+            // non-empty page was successfully delivered, we immediately
+            // re-poll. Two distinct reasons motivate the no-sleep path:
+            //
+            //   * Drain-in-progress: the server returned a `nextCursor`,
+            //     meaning more pending transactions are waiting. We
+            //     hand off the 25-tx batch to the consumer, await its
+            //     ack, then immediately re-poll with the carried-over
+            //     cursor to pick up the next 25.
+            //
+            //   * No cursor but the queue may have grown: signing can
+            //     take several seconds; new transactions may have
+            //     arrived while we were signing the previous batch.
+            //     Re-polling immediately picks those up.
             //
             // Critically, we await the consumer's ack between sending a
             // tick and the next poll. Without that, the producer can race
@@ -251,12 +277,17 @@ impl TransactionJob {
             // consumer has submitted the corresponding `SignTransactions`
             // mutation, causing the same uuid to be signed with consecutive
             // nonces and rejected by the platform.
-            let should_sleep = match self.get_pending_transactions().await {
-                Ok(transaction_reqs) => {
-                    // Treat an empty `Ok` (e.g. every item on page 1 failed
-                    // `TryFrom`) the same as `NO_TRANSACTIONS_MSG`: back off
-                    // instead of busy-looping on a broken-data condition.
+            let should_sleep = match self.get_pending_transactions(cursor.clone()).await {
+                Ok((transaction_reqs, next_cursor)) => {
+                    // Treat an empty `Ok` (e.g. every item on the page
+                    // failed `TryFrom`) the same as `NO_TRANSACTIONS_MSG`:
+                    // back off instead of busy-looping on a broken-data
+                    // condition. We deliberately drop `next_cursor` here
+                    // even if non-null — if the page we got was unusable,
+                    // continuing to drain via that cursor would just
+                    // produce more unusable pages.
                     if transaction_reqs.is_empty() {
+                        cursor = None;
                         if !seen_chains.is_empty() {
                             self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
                                 .await?;
@@ -274,10 +305,18 @@ impl TransactionJob {
                         self.send_tick_and_wait(transaction_reqs, idle, "transaction requests")
                             .await?;
                         no_transaction_count = 0;
+                        // Carry the cursor forward for the next poll
+                        // when the server says there is more pending,
+                        // and clear it otherwise.
+                        cursor = next_cursor;
                         false
                     }
                 }
                 Err(e) => {
+                    // Any error path resets the cursor: a stale cursor
+                    // is meaningless after we've lost our place in the
+                    // server-side scan.
+                    cursor = None;
                     if e.to_string() == NO_TRANSACTIONS_MSG {
                         if no_transaction_count % 10 == 0 {
                             tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
@@ -352,78 +391,60 @@ impl TransactionJob {
         Ok(())
     }
 
+    /// Fetch one page (up to `TRANSACTION_PAGE_SIZE` items) of pending
+    /// transactions, optionally resuming a server-side scan via
+    /// `cursor`. Returns the decoded `TransactionRequest`s alongside
+    /// the platform's `nextCursor`, which the caller carries forward
+    /// to the next poll when the platform indicates more pending work
+    /// is available.
     async fn get_pending_transactions(
         &self,
-    ) -> Result<Vec<TransactionRequest>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut all: Vec<TransactionRequest> = Vec::new();
-        let mut cursor: Option<String> = None;
-        let mut page_index: usize = 0;
+        cursor: Option<String>,
+    ) -> Result<(Vec<TransactionRequest>, Option<String>), Box<dyn std::error::Error + Send + Sync>>
+    {
+        let response_data = utils::execute_query::<GetPendingTransactions>(
+            get_pending_transactions::Variables {
+                limit: TRANSACTION_PAGE_SIZE,
+                cursor,
+            },
+            None,
+        )
+        .await?;
 
-        loop {
-            let response_data = utils::execute_query::<GetPendingTransactions>(
-                get_pending_transactions::Variables {
-                    limit: TRANSACTION_PAGE_SIZE,
-                    cursor: cursor.clone(),
-                },
-                None,
-            )
-            .await?;
+        let result = match response_data.result {
+            Some(r) => r,
+            None => return Err(NO_TRANSACTIONS_MSG.into()),
+        };
 
-            let result = match response_data.result {
-                Some(r) => r,
-                None => {
-                    // First page: no result at all -> nothing pending.
-                    // Later page: server gave us a `nextCursor` but then
-                    // returned no result; treat as end-of-stream.
-                    if page_index == 0 {
-                        return Err(NO_TRANSACTIONS_MSG.into());
-                    }
-                    break;
-                }
-            };
+        let page = result.data;
+        let next_cursor = match result.next_cursor {
+            Some(c) if !c.is_empty() => Some(c),
+            _ => None,
+        };
 
-            let page = result.data;
-            let next_cursor = result.next_cursor;
-            let page_len = page.len();
+        if page.is_empty() {
+            return Err(NO_TRANSACTIONS_MSG.into());
+        }
 
-            if page_index == 0 && page.is_empty() {
-                return Err(NO_TRANSACTIONS_MSG.into());
-            }
-
-            all.extend(page.into_iter().filter_map(|p| {
+        let requests: Vec<TransactionRequest> = page
+            .into_iter()
+            .filter_map(|p| {
                 TransactionRequest::try_from(p)
                     .map_err(|e| {
                         tracing::error!("Error creating TransactionRequest: {}", e);
                         e
                     })
                     .ok()
-            }));
+            })
+            .collect();
 
-            tracing::debug!(
-                "GetPendingTransactions: fetched page {} ({} items, total so far: {}), next_cursor present: {}",
-                page_index,
-                page_len,
-                all.len(),
-                next_cursor.is_some(),
-            );
+        tracing::debug!(
+            "GetPendingTransactions: {} request(s) returned, next_cursor present: {}",
+            requests.len(),
+            next_cursor.is_some(),
+        );
 
-            page_index += 1;
-
-            match next_cursor {
-                Some(c) if !c.is_empty() => cursor = Some(c),
-                _ => break,
-            }
-        }
-
-        if page_index > 1 {
-            tracing::info!(
-                "GetPendingTransactions: drained {} pages, {} transaction(s) total",
-                page_index,
-                all.len(),
-            );
-        }
-
-        Ok(all)
+        Ok((requests, next_cursor))
     }
 }
 
