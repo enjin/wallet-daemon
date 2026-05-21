@@ -23,8 +23,8 @@ const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
 const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
-/// Per-batch nonce map key. Each `(network, chain, signer public key)` tracks
-/// its own counter for the duration of a single batch.
+/// Nonce cache key. Each `(network, chain, signer public key)` identifies
+/// a signer-specific counter that may persist across batches until evicted.
 type NonceKey = (Network, Chain, [u8; 32]);
 
 /// Per-batch chain key for block / metadata prefetch.
