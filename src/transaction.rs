@@ -592,6 +592,8 @@ impl TransactionProcessor {
         // (see the `Err` arm after the loop).
         let mut committed_keys: HashSet<NonceKey> = HashSet::new();
 
+        let request_count = requests.len();
+
         for (signer, request) in signers.into_iter().zip(requests) {
             let TransactionRequest {
                 request_id,
@@ -782,6 +784,15 @@ impl TransactionProcessor {
             // batch's `SignTransactions` mutation ultimately fails.
             *nonce_slot += 1;
             committed_keys.insert(nonce_key);
+        }
+
+        // Short-circuit if every request in this batch was skipped
+        // (failed prefetch, failed signing, etc.)
+        if inputs.is_empty() {
+            tracing::debug!(
+                "SignTransactions: nothing to submit (all {request_count} request(s) in this batch were skipped)",
+            );
+            return;
         }
 
         // Snapshot the uuids actually queued for submission so we can name
