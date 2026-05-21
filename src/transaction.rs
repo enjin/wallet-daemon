@@ -514,6 +514,11 @@ impl TransactionProcessor {
         }
 
         let mut inputs = Vec::with_capacity(requests.len());
+        // `NonceKey`s whose in-memory counter we advanced during this
+        // batch. On a successful `SignTransactions` round-trip these
+        // increments stay; on failure we evict every entry in this set
+        // (see the `Err` arm after the loop).
+        let mut committed_keys: HashSet<NonceKey> = HashSet::new();
 
         for (signer, request) in signers.into_iter().zip(requests) {
             let TransactionRequest {
@@ -700,10 +705,36 @@ impl TransactionProcessor {
             });
 
             // Only advance the nonce after a tx has been successfully
-            // built, signed, and queued for submission.
+            // built, signed, and queued for submission. Track the
+            // `NonceKey` so we can roll back the in-memory counter if the
+            // batch's `SignTransactions` mutation ultimately fails.
             *nonce_slot += 1;
+            committed_keys.insert(nonce_key);
         }
-        platform_client::sign_transactions(inputs).await;
+
+        // Snapshot the uuids actually queued for submission so we can name
+        // them in the rollback log if the platform mutation fails.
+        let submitted_uuids: Vec<String> = inputs.iter().map(|i| i.uuid.clone()).collect();
+
+        if let Err(e) = platform_client::sign_transactions(inputs).await {
+            // Platform-side failure (after retries): every nonce we
+            // advanced in this batch is uncommitted — those uuids are
+            // still pending on the platform side and the on-chain nonce
+            // hasn't moved. Evict the affected cache entries so the next
+            // batch re-fetches the real on-chain nonce and re-signs the
+            // same uuids at the correct values. Without this, the cache
+            // would drift forward by `committed_keys.len()` entries
+            // relative to chain reality, producing future-nonce
+            // extrinsics on every subsequent batch and a stuck queue.
+            let evicted = evict_nonce_keys(nonces, &committed_keys);
+            let chains: HashSet<ChainKey> = committed_keys
+                .iter()
+                .map(|(net, chain, _)| (*net, *chain))
+                .collect();
+            tracing::error!(
+                "Platform SignTransactions failed; evicting nonce cache for affected chains so the next batch will re-fetch from chain. error={e} chains={chains:?} uuids={submitted_uuids:?} evicted={evicted}",
+            );
+        }
     }
 
     async fn launch_job_scheduler(mut self) {
@@ -775,6 +806,21 @@ fn derive_signer(keypair: &Keypair, external_id: Option<&str>) -> Keypair {
 fn evict_idle_chains(nonces: &mut HashMap<NonceKey, u64>, idle: &HashSet<ChainKey>) -> usize {
     let before = nonces.len();
     nonces.retain(|(net, chain, _), _| !idle.contains(&(*net, *chain)));
+    before - nonces.len()
+}
+
+/// Drop every nonce-cache entry in `keys`. Used to roll back the cache
+/// after a failed `SignTransactions` mutation: the per-tx loop in
+/// `transaction_handler` advances the in-memory nonce counter as each tx
+/// is built and queued for submission, but those increments only reflect
+/// reality once the platform accepts the batch. If the platform-side
+/// mutation ultimately fails (after retries), the cached counters reflect
+/// uncommitted nonces and must be discarded so the next batch re-reads
+/// the on-chain nonce from scratch and re-signs the same uuids at the
+/// correct nonce values. Returns the number of entries actually evicted.
+fn evict_nonce_keys(nonces: &mut HashMap<NonceKey, u64>, keys: &HashSet<NonceKey>) -> usize {
+    let before = nonces.len();
+    nonces.retain(|k, _| !keys.contains(k));
     before - nonces.len()
 }
 
@@ -938,6 +984,62 @@ mod tests {
 
         evict_idle_chains(&mut nonces, &HashSet::new());
 
+        assert_eq!(nonces[&(Network::Enjin, Chain::Matrix, [0u8; 32])], 7);
+        assert_eq!(nonces.len(), 1);
+    }
+
+    /// Rollback-on-failure: when the platform `SignTransactions` mutation
+    /// fails after retries, the in-memory nonce counters that were
+    /// advanced during the failed batch must be evicted (and only those —
+    /// any other keys, including different signers on the same chain,
+    /// must remain intact). The next batch will then re-fetch the real
+    /// on-chain nonce for each evicted key and re-sign the same uuids at
+    /// the correct nonce values.
+    #[test]
+    fn evict_nonce_keys_drops_only_matching_keys() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+
+        let alice = [0xAAu8; 32];
+        let bob = [0xBBu8; 32];
+
+        // Alice was used on Enjin Matrix and Enjin Relay this batch.
+        nonces.insert((Network::Enjin, Chain::Matrix, alice), 31);
+        nonces.insert((Network::Enjin, Chain::Relay, alice), 12);
+        // Bob was on Enjin Matrix this batch but in a *different* tick
+        // that already succeeded; his cache must not be touched.
+        nonces.insert((Network::Enjin, Chain::Matrix, bob), 9);
+        // Alice on Canary was untouched this batch.
+        nonces.insert((Network::Canary, Chain::Matrix, alice), 4);
+
+        // Failed batch advanced Alice on both Enjin chains.
+        let to_evict: HashSet<NonceKey> = [
+            (Network::Enjin, Chain::Matrix, alice),
+            (Network::Enjin, Chain::Relay, alice),
+        ]
+        .into_iter()
+        .collect();
+
+        let evicted = evict_nonce_keys(&mut nonces, &to_evict);
+
+        assert_eq!(evicted, 2);
+        assert!(!nonces.contains_key(&(Network::Enjin, Chain::Matrix, alice)));
+        assert!(!nonces.contains_key(&(Network::Enjin, Chain::Relay, alice)));
+        // Bob on the same chain as Alice must survive.
+        assert_eq!(nonces[&(Network::Enjin, Chain::Matrix, bob)], 9);
+        // Alice on Canary must survive.
+        assert_eq!(nonces[&(Network::Canary, Chain::Matrix, alice)], 4);
+        assert_eq!(nonces.len(), 2);
+    }
+
+    /// A no-op `evict_nonce_keys` call must not touch anything.
+    #[test]
+    fn evict_nonce_keys_empty_set_is_noop() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+        nonces.insert((Network::Enjin, Chain::Matrix, [0u8; 32]), 7);
+
+        let evicted = evict_nonce_keys(&mut nonces, &HashSet::new());
+
+        assert_eq!(evicted, 0);
         assert_eq!(nonces[&(Network::Enjin, Chain::Matrix, [0u8; 32])], 7);
         assert_eq!(nonces.len(), 1);
     }

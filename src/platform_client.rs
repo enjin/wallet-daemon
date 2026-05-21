@@ -19,7 +19,9 @@ impl PlatformExponentialBuilder {
     }
 }
 
-pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
+pub async fn sign_transactions(
+    transactions: Vec<SignTransactionInput>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let uuids: Vec<_> = transactions.iter().map(|x| x.uuid.clone()).collect();
 
     let res = utils::execute_query::<SignTransactions>(
@@ -38,8 +40,9 @@ pub async fn sign_transactions(transactions: Vec<SignTransactionInput>) {
             for uuid in uuids {
                 tracing::debug!("Signed transaction #{}", uuid);
             }
+            Ok(())
         }
-        Err(e) => tracing::error!("Error sending SignTransactions: {}", e),
+        Err(e) => Err(e),
     }
 }
 
