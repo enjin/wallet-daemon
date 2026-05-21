@@ -34,6 +34,31 @@ type ChainKey = (Network, Chain);
 /// reused for every request signed against that chain in the batch.
 type BlockInfo = (u32, H256, u32);
 
+/// Fatal failure to dispatch a `ProcessorTick` from producer to consumer.
+/// See `send_tick_and_wait` for the rationale on why both variants are
+/// treated as fatal.
+#[derive(Debug)]
+enum TickDispatchError {
+    /// `mpsc::send` failed: the consumer's `Receiver` was dropped, i.e.
+    /// the consumer task has exited.
+    ConsumerGone,
+    /// The ack `oneshot` was dropped without sending: the consumer
+    /// panicked mid-tick (or otherwise abandoned the tick) without
+    /// completing the unconditional ack at the end of `launch_job_scheduler`.
+    AckDropped,
+}
+
+impl std::fmt::Display for TickDispatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConsumerGone => write!(f, "transaction processor receiver dropped"),
+            Self::AckDropped => write!(f, "transaction processor dropped tick ack"),
+        }
+    }
+}
+
+impl std::error::Error for TickDispatchError {}
+
 /// Message sent from the poller to the processor on every poll tick.
 ///
 /// `batch` is the (possibly empty) set of transaction requests pulled this
@@ -192,11 +217,18 @@ impl TransactionJob {
 
     pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
-            self.start_polling().await;
+            // `start_polling` only returns on a fatal dispatch failure
+            // (consumer task gone or ack dropped). When that happens we
+            // log and let the task complete — `main`'s `tokio::select!`
+            // is watching this `JoinHandle` and will exit the daemon,
+            // letting the process supervisor restart it cleanly.
+            if let Err(e) = self.start_polling().await {
+                tracing::error!("Transaction poller exiting due to fatal error: {e}");
+            }
         })
     }
 
-    async fn start_polling(&self) {
+    async fn start_polling(&self) -> Result<(), TickDispatchError> {
         let mut no_transaction_count = 0;
         // Set of (network, chain) pairs we've ever delivered a batch for. Used
         // to compute the `idle` set: chains we've seen before but didn't see
@@ -227,7 +259,7 @@ impl TransactionJob {
                     if transaction_reqs.is_empty() {
                         if !seen_chains.is_empty() {
                             self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
-                                .await;
+                                .await?;
                         }
                         true
                     } else {
@@ -240,7 +272,7 @@ impl TransactionJob {
                         seen_chains.extend(active.iter().copied());
 
                         self.send_tick_and_wait(transaction_reqs, idle, "transaction requests")
-                            .await;
+                            .await?;
                         no_transaction_count = 0;
                         false
                     }
@@ -257,7 +289,7 @@ impl TransactionJob {
                         // evict their cache entries.
                         if !seen_chains.is_empty() {
                             self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
-                                .await;
+                                .await?;
                         }
                     } else {
                         tracing::error!("Error: {}", e);
@@ -281,20 +313,28 @@ impl TransactionJob {
     /// `kind` is a short label used only in error logs to distinguish the
     /// three send sites ("transaction requests" vs "idle tick").
     ///
-    /// Failure modes are logged and swallowed — there is no point bubbling
-    /// them up because the polling loop has nowhere useful to send them and
-    /// must keep running. If `send().await` fails, the consumer task has
-    /// died, in which case the daemon is in a broken state regardless. If
-    /// the ack channel is dropped without being signaled, the consumer
-    /// finished without acknowledging (this should not happen — the
-    /// consumer always sends the ack on the way out of every tick branch);
-    /// log and proceed so the producer can keep polling.
+    /// Both failure modes are fatal:
+    ///
+    ///   * `mpsc::send` failing means the receiver was dropped, i.e. the
+    ///     consumer task is gone. The mpsc never fails for any other
+    ///     reason — there is no transient case to recover from.
+    ///
+    ///   * The ack oneshot being dropped without a value means the
+    ///     consumer panicked mid-tick (the production code paths always
+    ///     signal the ack on the way out of every branch).
+    ///
+    /// Either way, in-flight batches are lost and there is nothing in
+    /// the current architecture that revives the consumer. Returning
+    /// `Err` here propagates up through `start_polling`, which causes
+    /// the polling task's `JoinHandle` to complete; `main`'s
+    /// `tokio::select!` then exits the daemon, allowing the process
+    /// supervisor to restart it cleanly with a fresh consumer.
     async fn send_tick_and_wait(
         &self,
         batch: Vec<TransactionRequest>,
         idle: HashSet<ChainKey>,
         kind: &str,
-    ) {
+    ) -> Result<(), TickDispatchError> {
         let (ack_tx, ack_rx) = oneshot::channel();
         let tick = ProcessorTick {
             batch,
@@ -303,11 +343,13 @@ impl TransactionJob {
         };
         if let Err(e) = self.sender.send(tick).await {
             tracing::error!("Failed to send {kind} to processor: {e:?}");
-            return;
+            return Err(TickDispatchError::ConsumerGone);
         }
         if let Err(e) = ack_rx.await {
-            tracing::warn!("Processor dropped ack for {kind} without signaling: {e:?}");
+            tracing::error!("Processor dropped ack for {kind} without signaling: {e:?}");
+            return Err(TickDispatchError::AckDropped);
         }
+        Ok(())
     }
 
     async fn get_pending_transactions(
@@ -1162,5 +1204,54 @@ mod tests {
         // Total fetches = distinct keys, not request count.
         assert_eq!(fetch_count.values().sum::<u32>(), 3);
         assert_eq!(refreshed_keys.len(), 3);
+    }
+
+    /// When the consumer's `Receiver` has been dropped (consumer task
+    /// has exited), `send_tick_and_wait` must return
+    /// `TickDispatchError::ConsumerGone` rather than logging and
+    /// silently returning. This is what allows the producer's polling
+    /// loop to terminate the daemon instead of degenerating into a
+    /// tight loop hammering the platform with `GetPendingTransactions`
+    /// while every dispatch fails.
+    #[tokio::test]
+    async fn send_tick_and_wait_returns_consumer_gone_when_receiver_dropped() {
+        let (sender, receiver) = tokio::sync::mpsc::channel::<ProcessorTick>(1);
+        let job = TransactionJob::new(sender);
+        // Drop the receiver -> any subsequent send fails with
+        // `mpsc::error::SendError`, which is the exact failure mode the
+        // reviewer flagged.
+        drop(receiver);
+
+        let result = job
+            .send_tick_and_wait(Vec::new(), HashSet::new(), "test idle tick")
+            .await;
+
+        assert!(matches!(result, Err(TickDispatchError::ConsumerGone)));
+    }
+
+    /// When the consumer accepts the tick but drops the ack `oneshot`
+    /// without signaling (i.e. panics mid-tick), `send_tick_and_wait`
+    /// must return `TickDispatchError::AckDropped`. This too is fatal:
+    /// it indicates the consumer has abandoned a tick and we have no
+    /// guarantee the corresponding `SignTransactions` was issued.
+    #[tokio::test]
+    async fn send_tick_and_wait_returns_ack_dropped_when_consumer_drops_ack() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<ProcessorTick>(1);
+        let job = TransactionJob::new(sender);
+
+        // Pretend to be a consumer that accepts the tick (drains the
+        // mpsc) but then drops the ack without signaling.
+        let consumer = tokio::spawn(async move {
+            if let Some(tick) = receiver.recv().await {
+                drop(tick.ack);
+            }
+        });
+
+        let result = job
+            .send_tick_and_wait(Vec::new(), HashSet::new(), "test idle tick")
+            .await;
+        consumer.await.unwrap();
+
+        assert!(matches!(result, Err(TickDispatchError::AckDropped)));
     }
 }
