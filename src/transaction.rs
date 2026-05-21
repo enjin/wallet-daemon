@@ -468,13 +468,30 @@ impl TransactionProcessor {
             block_info.insert(key, (block_number, block_hash, spec_version));
         }
 
-        // Seed the persistent nonce cache for any (network, chain, signer)
-        // triple in this batch that doesn't already have an entry. Triples
-        // with an existing cache entry are NOT re-fetched — that's how we
-        // carry the counter across back-to-back batches. The empty-poll
-        // reset (handled in `launch_job_scheduler`) is what eventually
-        // evicts a stale entry when a chain goes quiet.
+        // Seed (or refresh) the persistent nonce cache for every
+        // (network, chain, signer) triple in this batch. We fetch the
+        // on-chain nonce once per key per batch and rebase the cached
+        // slot to `max(slot, chain_nonce)`:
+        //
+        //   * If `slot >= chain_nonce`, the cache is preserved. This is
+        //     the common back-to-back-batch case: our previous batch
+        //     advanced the slot, the chain hasn't caught up to those
+        //     extrinsics yet, and the slot is still the right next
+        //     nonce to use.
+        //
+        //   * If `slot < chain_nonce`, something moved the on-chain
+        //     nonce forward out-of-band (a different daemon, a manual
+        //     extrinsic, the platform using a different code path,
+        //     etc.). Without this rebase, the daemon would happily keep
+        //     signing with the stale cached value and produce stale-
+        //     nonce extrinsics that the chain rejects silently. Empty-
+        //     poll cache eviction does NOT cover this case, because the
+        //     chain is still active in our daemon's view.
+        //
         let mut failed_keys: HashSet<NonceKey> = HashSet::new();
+        // Per-batch dedup: we want exactly one chain fetch per key per
+        // batch, even when the same triple appears across many requests.
+        let mut refreshed_keys: HashSet<NonceKey> = HashSet::new();
         for (signer, request) in signers.iter().zip(requests.iter()) {
             // Don't bother fetching a nonce for a chain that already failed
             // its block / metadata prefetch.
@@ -482,7 +499,7 @@ impl TransactionProcessor {
                 continue;
             }
             let key: NonceKey = (request.network, request.chain, signer.public_key().0);
-            if nonces.contains_key(&key) || failed_keys.contains(&key) {
+            if refreshed_keys.contains(&key) || failed_keys.contains(&key) {
                 continue;
             }
             match chain_info::get_account_nonce(
@@ -492,14 +509,27 @@ impl TransactionProcessor {
             )
             .await
             {
-                Ok(n) => {
-                    tracing::debug!(
-                        "Prefetched nonce {n} for acc 0x{} - Network: {:?} - Chain: {:?}",
-                        hex::encode(key.2),
-                        request.network,
-                        request.chain,
-                    );
-                    nonces.insert(key, n);
+                Ok(chain_nonce) => {
+                    let slot = nonces.entry(key).or_insert(chain_nonce);
+                    if *slot < chain_nonce {
+                        let was = *slot;
+                        *slot = chain_nonce;
+                        tracing::info!(
+                            "Detected out-of-band nonce advance for account 0x{} - Network: {:?} - Chain: {:?}; rebasing cache from {was} to {chain_nonce}",
+                            hex::encode(key.2),
+                            request.network,
+                            request.chain,
+                        );
+                    } else {
+                        let cached = *slot;
+                        tracing::debug!(
+                            "Refreshed nonce: cache={cached} chain={chain_nonce} for account 0x{} - Network: {:?} - Chain: {:?}",
+                            hex::encode(key.2),
+                            request.network,
+                            request.chain,
+                        );
+                    }
+                    refreshed_keys.insert(key);
                 }
                 Err(e) => {
                     tracing::error!(
@@ -909,39 +939,79 @@ mod tests {
         assert_eq!(nonces[&key], 12);
     }
 
-    /// Cross-batch carry-over: a triple that already has a cache entry from
-    /// a previous batch must NOT be re-seeded when the next batch starts. The
-    /// next batch picks up where the previous one left off.
+    /// Cross-batch carry-over: when the chain has not yet caught up to
+    /// our previously-signed extrinsics, the cached slot must be
+    /// preserved across batches. This is the common case for back-to-
+    /// back batches against the same `(network, chain, signer)`: our
+    /// previous batch's extrinsics are still propagating / awaiting
+    /// inclusion, so the chain still reports the pre-batch nonce, but
+    /// we must keep using our advanced cache.
     ///
-    /// This mirrors the seed-on-miss check in `transaction_handler`'s nonce
-    /// prefetch (`if nonces.contains_key(&key) || failed_keys.contains(&key)
-    /// { continue; }`). A miss would call out to chain; a hit must short-
-    /// circuit.
+    /// Mirrors the `max(slot, chain_nonce)` rebase in
+    /// `transaction_handler`'s seed loop: when `slot >= chain_nonce`,
+    /// the slot is unchanged.
     #[test]
-    fn cache_carry_over_skips_chain_fetch_on_hit() {
+    fn cache_carry_over_preserves_slot_when_chain_is_behind() {
         let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
         let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
 
-        // Simulate end-of-batch-1 state: 25 txs signed starting at chain
-        // nonce 21, slot now holds 46 (= 21 + 25).
+        // End-of-batch-1 state: 25 txs signed starting at chain nonce
+        // 21, slot now holds 46 (= 21 + 25). The chain still reports 21
+        // because none of those extrinsics have been included yet.
         nonces.insert(key, 46);
+        let chain_nonce: u64 = 21;
 
-        // Batch 2 starts. The prefetch decision is `nonces.contains_key(&key)`.
-        // A hit means we do NOT fetch from chain; we just reuse the slot.
-        let would_fetch_from_chain = !nonces.contains_key(&key);
-        assert!(
-            !would_fetch_from_chain,
-            "cache hit must not trigger a chain fetch"
-        );
-
-        // The next signed tx in batch 2 must therefore use 46, not 21.
+        // Apply the same rebase rule as the production seed loop:
+        // `slot = max(slot, chain_nonce)`. When the chain is behind us
+        // the slot must remain at 46.
         let slot = nonces.get_mut(&key).unwrap();
+        if *slot < chain_nonce {
+            *slot = chain_nonce;
+        }
         assert_eq!(
             *slot, 46,
-            "batch 2 must continue from where batch 1 left off"
+            "slot must be preserved when chain is behind the cache"
         );
+
+        // The next signed tx must therefore use 46, not 21.
         *slot += 1;
         assert_eq!(nonces[&key], 47);
+    }
+
+    /// Out-of-band advance: when the on-chain nonce has moved past the
+    /// cached slot (because some other process — another daemon, a
+    /// manual extrinsic, etc. — used the same account), the cache must
+    /// be rebased to the chain's value before signing. Otherwise the
+    /// daemon would keep producing stale-nonce extrinsics that the
+    /// chain rejects silently. This is the bug the second reviewer
+    /// flagged.
+    ///
+    /// Mirrors the `max(slot, chain_nonce)` rebase in
+    /// `transaction_handler`'s seed loop: when `slot < chain_nonce`,
+    /// the slot is bumped up.
+    #[test]
+    fn cache_rebases_to_chain_when_chain_advances_out_of_band() {
+        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
+        let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
+
+        // Cache says next nonce is 30 (e.g. we last signed nonce 29).
+        nonces.insert(key, 30);
+        // Meanwhile the chain has moved to 35 because something else
+        // signed nonces 30..35 with this account.
+        let chain_nonce: u64 = 35;
+
+        let slot = nonces.get_mut(&key).unwrap();
+        if *slot < chain_nonce {
+            *slot = chain_nonce;
+        }
+        assert_eq!(
+            *slot, 35,
+            "slot must be rebased to chain when chain has advanced past the cache"
+        );
+
+        // The next signed tx must therefore use 35, not 30.
+        *slot += 1;
+        assert_eq!(nonces[&key], 36);
     }
 
     /// Reset-on-idle: when the poller reports a chain went idle, every cache
@@ -1042,5 +1112,55 @@ mod tests {
         assert_eq!(evicted, 0);
         assert_eq!(nonces[&(Network::Enjin, Chain::Matrix, [0u8; 32])], 7);
         assert_eq!(nonces.len(), 1);
+    }
+
+    /// Per-batch dedup invariant: when a batch contains many requests
+    /// for the same `(network, chain, signer)` triple, the seed loop
+    /// must call out to chain exactly once for that key. Otherwise we'd
+    /// pay one chain RPC per request (catastrophic for batches of 25)
+    /// and — worse — every fetch after the first would clobber the
+    /// in-flight slot we've already started advancing.
+    ///
+    /// The production loop tracks this via a `refreshed_keys: HashSet`
+    /// guard: the first encounter inserts into the set and fetches; all
+    /// subsequent encounters short-circuit. This test models that
+    /// guard.
+    #[test]
+    fn seed_loop_fetches_each_key_exactly_once_per_batch() {
+        let alice = [0xAAu8; 32];
+        let bob = [0xBBu8; 32];
+
+        // Simulated batch: 5 requests, three of them are Alice on Enjin
+        // Matrix (the duplicates), one is Bob on Enjin Matrix, one is
+        // Alice on Canary Matrix.
+        let batch: Vec<NonceKey> = vec![
+            (Network::Enjin, Chain::Matrix, alice),
+            (Network::Enjin, Chain::Matrix, alice),
+            (Network::Enjin, Chain::Matrix, bob),
+            (Network::Enjin, Chain::Matrix, alice),
+            (Network::Canary, Chain::Matrix, alice),
+        ];
+
+        let mut refreshed_keys: HashSet<NonceKey> = HashSet::new();
+        let mut fetch_count: HashMap<NonceKey, u32> = HashMap::new();
+
+        for key in &batch {
+            if refreshed_keys.contains(key) {
+                continue;
+            }
+            // This branch models the chain RPC.
+            *fetch_count.entry(*key).or_insert(0) += 1;
+            refreshed_keys.insert(*key);
+        }
+
+        // Each distinct key fetched exactly once...
+        assert_eq!(fetch_count[&(Network::Enjin, Chain::Matrix, alice)], 1);
+        assert_eq!(fetch_count[&(Network::Enjin, Chain::Matrix, bob)], 1);
+        assert_eq!(fetch_count[&(Network::Canary, Chain::Matrix, alice)], 1);
+        // ...and no other keys were fetched.
+        assert_eq!(fetch_count.len(), 3);
+        // Total fetches = distinct keys, not request count.
+        assert_eq!(fetch_count.values().sum::<u32>(), 3);
+        assert_eq!(refreshed_keys.len(), 3);
     }
 }
