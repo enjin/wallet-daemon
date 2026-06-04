@@ -20,24 +20,23 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim AS runner
 LABEL description="This is the 2nd stage: a very small image where we copy the wallet binary."
-# rustls-based reqwest needs CA certificates; dos2unix normalizes the entry script.
+
+# rustls-based reqwest needs CA certificates.
 RUN apt-get update && \
-    apt-get install -y \
-    ca-certificates \
-    dos2unix && \
+    apt-get install -y ca-certificates && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
-RUN rm -rf /var/lib/apt/lists/*
 
 # ===== THIRD STAGE ======
 
 FROM runner
 
+WORKDIR /wallet
+
 COPY --chmod=0755 ./scripts/start.sh /usr/local/bin
 COPY --chmod=0755 --from=builder /wallet/target/release/wallet-daemon /usr/local/bin/wallet
 
 RUN mkdir -p /wallet/store && \
-    chmod 0700 /wallet/store && \
-    dos2unix /usr/local/bin/start.sh
+    chmod 0700 /wallet/store
 
-CMD ["start.sh"]
+CMD ["/usr/local/bin/start.sh"]
