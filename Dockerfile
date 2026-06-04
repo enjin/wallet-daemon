@@ -33,10 +33,9 @@ FROM runner
 
 WORKDIR /wallet
 
-COPY --chmod=0755 ./scripts/start.sh /usr/local/bin
 COPY --chmod=0755 --from=builder /wallet/target/release/wallet-daemon /usr/local/bin/wallet
 
 RUN mkdir -p /wallet/store && \
     chmod 0700 /wallet/store
 
-CMD ["/usr/local/bin/start.sh"]
+CMD ["/usr/local/bin/wallet"]
