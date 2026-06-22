@@ -42,7 +42,13 @@ pub fn load_env() {
 /// Walks up from the current directory looking for a `.env` file, mirroring
 /// dotenvy's default lookup so behavior is unchanged for UTF-8 users.
 fn find_dotenv() -> Option<PathBuf> {
-    let mut dir: PathBuf = std::env::current_dir().ok()?;
+    find_dotenv_from(std::env::current_dir().ok()?)
+}
+
+/// Walks up from `start` looking for a `.env` file. Pure — touches no process
+/// state — so it can be tested directly without `set_current_dir`.
+fn find_dotenv_from(start: PathBuf) -> Option<PathBuf> {
+    let mut dir = start;
     loop {
         let candidate = dir.join(".env");
         if candidate.is_file() {
@@ -55,14 +61,18 @@ fn find_dotenv() -> Option<PathBuf> {
 }
 
 fn decode_utf16(body: &[u8], to_u16: fn([u8; 2]) -> u16) -> String {
-    let units: Vec<u16> = body.chunks_exact(2).map(|c| to_u16([c[0], c[1]])).collect();
+    let mut units: Vec<u16> = body.chunks_exact(2).map(|c| to_u16([c[0], c[1]])).collect();
+    // An odd trailing byte means the file is truncated or not actually UTF-16.
+    // Preserve it as U+FFFD rather than silently dropping data.
+    if !body.len().is_multiple_of(2) {
+        units.push(0xFFFD);
+    }
     String::from_utf16_lossy(&units)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn read_back(bytes: &[u8]) -> String {
         // Reproduce load_env's transcoding without touching process env.
@@ -126,8 +136,40 @@ mod tests {
     }
 
     #[test]
-    fn find_dotenv_returns_none_when_absent() {
-        // Sanity: a path that cannot exist as a file.
-        assert!(!Path::new("/nonexistent-dir-xyz/.env").is_file());
+    fn decodes_odd_length_utf16_with_replacement() {
+        // "AB" as UTF-16 LE plus a dangling odd byte after the BOM.
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend("AB".encode_utf16().flat_map(u16::to_le_bytes));
+        bytes.push(0x00); // truncated final code unit
+        let out = read_back(&bytes);
+        assert!(out.starts_with("AB"), "decoded prefix lost: {out:?}");
+        assert!(
+            out.ends_with('\u{FFFD}'),
+            "dangling byte should become U+FFFD, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn find_dotenv_walks_up_to_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".env"), b"KEY_PASS=x\n").unwrap();
+        let nested = root.path().join("a/b");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(find_dotenv_from(nested), Some(root.path().join(".env")));
+    }
+
+    #[test]
+    fn find_dotenv_prefers_nearest() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".env"), b"a=1\n").unwrap();
+        let nearer = root.path().join("a");
+        std::fs::create_dir_all(nearer.join("b")).unwrap();
+        std::fs::write(nearer.join(".env"), b"a=2\n").unwrap();
+
+        assert_eq!(
+            find_dotenv_from(root.path().join("a/b")),
+            Some(nearer.join(".env"))
+        );
     }
 }
