@@ -55,10 +55,7 @@ fn find_dotenv() -> Option<PathBuf> {
 }
 
 fn decode_utf16(body: &[u8], to_u16: fn([u8; 2]) -> u16) -> String {
-    let units: Vec<u16> = body
-        .chunks_exact(2)
-        .map(|c| to_u16([c[0], c[1]]))
-        .collect();
+    let units: Vec<u16> = body.chunks_exact(2).map(|c| to_u16([c[0], c[1]])).collect();
     String::from_utf16_lossy(&units)
 }
 
