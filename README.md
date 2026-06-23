@@ -37,6 +37,27 @@ KEY_PASS=your-unique-key-password
 PLATFORM_KEY=your-platform-api-token
 ```
 
+### Windows / PowerShell
+
+The `.env` file must be UTF-8. Windows PowerShell 5.1 writes UTF-16 by default
+(`>`, `Out-File`, `Set-Content` without `-Encoding`), which can corrupt `.env`.
+The daemon auto-detects and reads UTF-16 `.env` files, but to be safe either
+save explicitly as UTF-8:
+
+```powershell
+Set-Content -Path .env -Encoding utf8 -Value "KEY_PASS=...`nPLATFORM_KEY=..."
+```
+
+or set the variables in the session instead of using a file:
+
+```powershell
+$env:KEY_PASS="your-unique-key-password"
+$env:PLATFORM_KEY="your-platform-api-token"
+```
+
+Also make sure the file is named exactly `.env`, not `.env.txt` (Notepad can add
+a hidden `.txt` extension).
+
 ## Running Locally
 
 Build and run from source:

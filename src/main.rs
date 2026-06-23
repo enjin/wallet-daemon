@@ -22,6 +22,7 @@ pub const DUMMY_TX_MORTALITY: u64 = 14_400;
 
 mod chain_info;
 mod crypto;
+mod env_loader;
 mod global;
 mod graphql;
 mod importer;
@@ -36,6 +37,9 @@ mod wallet_loader;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load `.env` (transcoding UTF-16 to UTF-8) before any `dotenvy::var` call.
+    env_loader::load_env();
+
     let seed_path = resolve_seed_path(dotenvy::var("SEED_PATH").ok().as_deref());
 
     // check for subcommands
