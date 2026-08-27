@@ -12,6 +12,32 @@ where
     T::Variables: serde::Serialize,
     T::ResponseData: Debug,
 {
+    execute_query_inner::<T>(variables, retry_strategy, true).await
+}
+
+/// Execute a GraphQL operation without placing its response body in debug
+/// logs. Used for short-lived authentication credentials such as the Pusher
+/// private-channel signature.
+pub async fn execute_query_redacted<T: graphql_client::GraphQLQuery>(
+    variables: T::Variables,
+    retry_strategy: Option<ExponentialBuilder>,
+) -> Result<T::ResponseData, Box<dyn std::error::Error + Send + Sync>>
+where
+    T::Variables: serde::Serialize,
+    T::ResponseData: Debug,
+{
+    execute_query_inner::<T>(variables, retry_strategy, false).await
+}
+
+async fn execute_query_inner<T: graphql_client::GraphQLQuery>(
+    variables: T::Variables,
+    retry_strategy: Option<ExponentialBuilder>,
+    log_response_body: bool,
+) -> Result<T::ResponseData, Box<dyn std::error::Error + Send + Sync>>
+where
+    T::Variables: serde::Serialize,
+    T::ResponseData: Debug,
+{
     let query_body = T::build_query(variables);
     if tracing::enabled!(tracing::Level::DEBUG)
         && let Ok(json) = serde_json::to_string(&query_body)
@@ -41,7 +67,9 @@ where
     };
     if response.status() == StatusCode::OK {
         let response_body: graphql_client::Response<T::ResponseData> = response.json().await?;
-        tracing::debug!("Response Body: {:?}", &response_body);
+        if log_response_body {
+            tracing::debug!("Response Body: {:?}", &response_body);
+        }
         response_body.data.ok_or_else(|| {
             if let Some(errors) = response_body.errors {
                 let error_messages = errors

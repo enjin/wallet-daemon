@@ -1,14 +1,14 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{GetPendingManagedWalletCreations, get_pending_managed_wallet_creations};
+use crate::work_trigger::{PusherStatus, WorkTrigger};
 use crate::{platform_client, utils};
-use std::time::Duration;
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio::time::interval;
+use tokio::time::sleep;
 
-const ACCOUNT_POLLER_MS: u64 = 6000;
 const ACCOUNT_PAGE_SIZE: i64 = 100;
 
 #[derive(Clone)]
@@ -30,103 +30,197 @@ impl TryFrom<get_pending_managed_wallet_creations::GetPendingManagedWalletCreati
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BatchOutcome {
+    Completed,
+    NeedsRefetch,
+}
+
+struct WalletBatch {
+    requests: Vec<DeriveWalletRequest>,
+    ack: oneshot::Sender<BatchOutcome>,
+}
+
 #[derive(Debug)]
 pub struct DeriveWalletJob {
-    sender: Sender<Vec<DeriveWalletRequest>>,
+    sender: Sender<WalletBatch>,
+    trigger: WorkTrigger,
+    pusher_status: PusherStatus,
 }
 
 impl DeriveWalletJob {
-    pub fn new(sender: Sender<Vec<DeriveWalletRequest>>) -> Self {
-        Self { sender }
-    }
-
-    pub fn create_job(keypair: Keypair) -> (DeriveWalletJob, DeriveWalletProcessor) {
-        let (sender, receiver) = tokio::sync::mpsc::channel(50_000);
+    pub fn create_job(
+        keypair: Keypair,
+        trigger: WorkTrigger,
+        pusher_status: PusherStatus,
+    ) -> (DeriveWalletJob, DeriveWalletProcessor) {
+        // Capacity one plus the per-batch acknowledgement guarantees that a
+        // wallet page is fully populated before another page is fetched.
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
 
         (
-            DeriveWalletJob::new(sender),
+            DeriveWalletJob {
+                sender,
+                trigger,
+                pusher_status,
+            },
             DeriveWalletProcessor::new(keypair, receiver),
         )
     }
 
     pub fn start(self) -> JoinHandle<()> {
         tokio::spawn(async move {
-            self.start_polling().await;
+            if let Err(error) = self.start_polling().await {
+                tracing::error!("Managed-wallet worker exiting due to fatal error: {error}");
+            }
         })
     }
 
-    async fn start_polling(&self) {
-        let mut interval = interval(Duration::from_millis(ACCOUNT_POLLER_MS));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    async fn start_polling(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut cursor: Option<String> = None;
+        let mut fetch_now = true; // Mandatory startup catch-up.
+        let mut failure_count = 0u32;
+        let mut pusher_aware_poll = self.pusher_status.poller();
 
         loop {
-            interval.tick().await;
+            if !fetch_now {
+                tokio::select! {
+                    _ = self.trigger.wait_until_ready() => {}
+                    _ = pusher_aware_poll.tick() => {}
+                }
+            }
 
-            match self.get_pending_wallets().await {
-                Ok(derive_wallet_reqs) => {
-                    if let Err(e) = self.sender.try_send(derive_wallet_reqs) {
-                        tracing::info!("Error sending derive wallet requests: {:?}", e);
+            let fresh_lookup = cursor.is_none();
+            if fresh_lookup {
+                self.trigger.begin_fresh_lookup();
+            }
+            fetch_now = false;
+
+            match self.get_pending_wallets(cursor.clone()).await {
+                Ok((requests, _next_cursor)) if requests.is_empty() => {
+                    cursor = None;
+                    if fresh_lookup {
+                        self.trigger.finish_empty_lookup();
+                    } else {
+                        fetch_now = self.trigger.finish_batch();
+                    }
+                    failure_count = 0;
+                    tracing::info!("No pending managed wallets");
+                }
+                Ok((requests, next_cursor)) => {
+                    let external_ids = requests
+                        .iter()
+                        .map(|request| request.external_id.clone())
+                        .collect::<Vec<_>>();
+                    self.trigger.set_active(external_ids);
+
+                    let outcome = self.send_batch_and_wait(requests).await?;
+                    let deferred = self.trigger.finish_batch();
+
+                    match outcome {
+                        BatchOutcome::Completed => {
+                            failure_count = 0;
+                            cursor = next_cursor;
+                            fetch_now = cursor.is_some() || deferred;
+                        }
+                        BatchOutcome::NeedsRefetch => {
+                            cursor = None;
+                            self.trigger.force();
+                            let delay = crate::retry::jittered_exponential_delay(failure_count);
+                            failure_count = failure_count.saturating_add(1);
+                            tracing::warn!(
+                                "Managed-wallet batch needs a fresh lookup; retrying in {:.1}s",
+                                delay.as_secs_f64(),
+                            );
+                            sleep(delay).await;
+                            fetch_now = true;
+                        }
                     }
                 }
-                Err(e) => {
-                    if e.to_string() == "Empty response body" {
-                        tracing::info!("No pending wallets");
-                    } else {
-                        tracing::info!("Error: {:?}", e);
-                    }
+                Err(error) => {
+                    cursor = None;
+                    self.trigger.finish_empty_lookup();
+                    self.trigger.force();
+                    let delay = crate::retry::jittered_exponential_delay(failure_count);
+                    failure_count = failure_count.saturating_add(1);
+                    tracing::error!("GetPendingManagedWalletCreations failed: {error}");
+                    tracing::warn!(
+                        "Retrying managed-wallet lookup in {:.1}s",
+                        delay.as_secs_f64(),
+                    );
+                    sleep(delay).await;
+                    fetch_now = true;
                 }
             }
         }
     }
 
+    async fn send_batch_and_wait(
+        &self,
+        requests: Vec<DeriveWalletRequest>,
+    ) -> Result<BatchOutcome, Box<dyn std::error::Error + Send + Sync>> {
+        let (ack, completion) = oneshot::channel();
+        self.sender
+            .send(WalletBatch { requests, ack })
+            .await
+            .map_err(|_| "managed-wallet processor receiver dropped")?;
+        completion
+            .await
+            .map_err(|_| "managed-wallet processor dropped batch acknowledgement".into())
+    }
+
     async fn get_pending_wallets(
         &self,
-    ) -> Result<Vec<DeriveWalletRequest>, Box<dyn std::error::Error + Send + Sync>> {
+        cursor: Option<String>,
+    ) -> Result<(Vec<DeriveWalletRequest>, Option<String>), Box<dyn std::error::Error + Send + Sync>>
+    {
         let response_data = utils::execute_query::<GetPendingManagedWalletCreations>(
             get_pending_managed_wallet_creations::Variables {
                 limit: ACCOUNT_PAGE_SIZE,
-                cursor: None,
+                cursor,
             },
             None,
         )
         .await?;
 
-        let derive_wallets_req = response_data
-            .result
-            .ok_or("No pending wallets in response")?;
-
-        Ok(derive_wallets_req
+        let Some(result) = response_data.result else {
+            return Ok((Vec::new(), None));
+        };
+        let next_cursor = result.next_cursor.filter(|cursor| !cursor.is_empty());
+        let requests = result
             .data
             .into_iter()
-            .filter_map(|p| {
-                DeriveWalletRequest::try_from(p)
-                    .map_err(|e| {
-                        tracing::info!("Error: {:?}", e);
-                        e
+            .filter_map(|pending| {
+                DeriveWalletRequest::try_from(pending)
+                    .map_err(|error| {
+                        tracing::error!("Error creating DeriveWalletRequest: {error}");
+                        error
                     })
                     .ok()
             })
-            .collect())
+            .collect();
+
+        Ok((requests, next_cursor))
     }
 }
 
 pub struct DeriveWalletProcessor {
     keypair: Keypair,
-    receiver: Receiver<Vec<DeriveWalletRequest>>,
+    receiver: Receiver<WalletBatch>,
 }
 
 impl DeriveWalletProcessor {
-    pub(crate) fn new(keypair: Keypair, receiver: Receiver<Vec<DeriveWalletRequest>>) -> Self {
+    fn new(keypair: Keypair, receiver: Receiver<WalletBatch>) -> Self {
         Self { keypair, receiver }
     }
 
-    async fn derive_wallets(keypair: Keypair, requests: Vec<DeriveWalletRequest>) {
+    async fn derive_wallets(keypair: Keypair, requests: Vec<DeriveWalletRequest>) -> BatchOutcome {
         let wallets: Vec<_> = requests
             .into_iter()
             .map(|request| {
                 let external_id = request.external_id;
                 let derive_junction = match external_id.parse::<i64>() {
-                    Ok(_) => DeriveJunction::soft(external_id.parse::<i64>().unwrap()),
+                    Ok(number) => DeriveJunction::soft(number),
                     Err(_) => DeriveJunction::soft(external_id.clone()),
                 };
 
@@ -145,14 +239,21 @@ impl DeriveWalletProcessor {
             })
             .collect();
 
-        if !wallets.is_empty() {
-            platform_client::populate_managed_wallets(wallets).await;
+        match platform_client::populate_managed_wallets(wallets).await {
+            Ok(()) => BatchOutcome::Completed,
+            Err(error) => {
+                tracing::error!("PopulateManagedWallets failed: {error}");
+                BatchOutcome::NeedsRefetch
+            }
         }
     }
 
     async fn launch_job_scheduler(mut self) {
-        while let Some(requests) = self.receiver.recv().await {
-            tokio::spawn(Self::derive_wallets(self.keypair.clone(), requests));
+        // Wallet batches are independent from transaction batches, but each
+        // wallet worker remains strictly serial within its own workflow.
+        while let Some(WalletBatch { requests, ack }) = self.receiver.recv().await {
+            let outcome = Self::derive_wallets(self.keypair.clone(), requests).await;
+            let _ = ack.send(outcome);
         }
     }
 

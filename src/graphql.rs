@@ -68,3 +68,11 @@ pub struct GetPendingManagedWalletCreations;
     response_derives = "Debug"
 )]
 pub struct PopulateManagedWallets;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/authenticate_pusher_socket.graphql",
+    response_derives = "Debug"
+)]
+pub struct AuthenticatePusherSocket;

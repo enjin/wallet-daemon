@@ -6,6 +6,8 @@ use crate::transaction::TransactionJob;
 use crate::types::{Cli, Commands};
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::{load_seed, resolve_seed_path};
+use crate::websocket::PusherConnection;
+use crate::work_trigger::{PusherStatus, WorkTrigger};
 use clap::Parser;
 use reqwest::header::HeaderMap;
 use std::env;
@@ -28,15 +30,18 @@ mod graphql;
 mod importer;
 mod multitenant;
 mod platform_client;
+mod retry;
 pub mod substrate_client;
 mod transaction;
 mod types;
 mod utils;
 mod wallet;
 mod wallet_loader;
+mod websocket;
+mod work_trigger;
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load `.env` (transcoding UTF-16 to UTF-8) before any `dotenvy::var` call.
     env_loader::load_env();
 
@@ -120,11 +125,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     set_multitenant(keypair.clone()).await;
 
-    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(keypair.clone());
+    let transaction_trigger = WorkTrigger::new();
+    let wallet_trigger = WorkTrigger::new();
+    let pusher_status = PusherStatus::new();
 
-    let (wallet_poller, wallet_processor) = DeriveWalletJob::create_job(keypair);
+    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(
+        keypair.clone(),
+        transaction_trigger.clone(),
+        pusher_status.clone(),
+    );
+
+    let (wallet_poller, wallet_processor) =
+        DeriveWalletJob::create_job(keypair, wallet_trigger.clone(), pusher_status.clone());
+    let websocket = PusherConnection::from_env(transaction_trigger, wallet_trigger, pusher_status)?;
 
     tokio::select! {
+        _ = websocket.start() => {}
         _ = matrix_tx_poller.start() => {}
         _ = matrix_tx_processor.start() => {}
         _ = wallet_poller.start() => {}

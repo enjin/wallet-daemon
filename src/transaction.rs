@@ -5,11 +5,11 @@ use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
+use crate::work_trigger::{PusherStatus, WorkTrigger};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
 use parity_scale_codec::Encode;
 use payload::RawPayload;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 use subxt::config::DefaultExtrinsicParamsBuilder;
 use subxt::utils::H256;
 use subxt_signer::DeriveJunction;
@@ -20,7 +20,6 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
 const NO_TRANSACTIONS_MSG: &str = "No transactions present in the body";
-const TRANSACTION_POLLER_MS: u64 = 6000;
 const TRANSACTION_PAGE_SIZE: i64 = 25;
 
 /// Nonce cache key. Each `(network, chain, signer public key)` identifies
@@ -46,6 +45,12 @@ enum TickDispatchError {
     /// panicked mid-tick (or otherwise abandoned the tick) without
     /// completing the unconditional ack at the end of `launch_job_scheduler`.
     AckDropped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BatchOutcome {
+    Completed,
+    NeedsRefetch,
 }
 
 impl std::fmt::Display for TickDispatchError {
@@ -80,7 +85,7 @@ impl std::error::Error for TickDispatchError {}
 pub struct ProcessorTick {
     batch: Vec<TransactionRequest>,
     idle: HashSet<ChainKey>,
-    ack: oneshot::Sender<()>,
+    ack: oneshot::Sender<BatchOutcome>,
 }
 
 pub(crate) mod payload {
@@ -193,14 +198,37 @@ impl TryFrom<get_pending_transactions::GetPendingTransactionsResultData> for Tra
 #[derive(Debug)]
 pub struct TransactionJob {
     sender: Sender<ProcessorTick>,
+    trigger: WorkTrigger,
+    pusher_status: PusherStatus,
 }
 
 impl TransactionJob {
-    pub fn new(sender: Sender<ProcessorTick>) -> Self {
-        Self { sender }
+    #[cfg(test)]
+    fn new(sender: Sender<ProcessorTick>) -> Self {
+        Self {
+            sender,
+            trigger: WorkTrigger::new(),
+            pusher_status: PusherStatus::new(),
+        }
     }
 
-    pub fn create_job(keypair: Keypair) -> (TransactionJob, TransactionProcessor) {
+    fn with_trigger(
+        sender: Sender<ProcessorTick>,
+        trigger: WorkTrigger,
+        pusher_status: PusherStatus,
+    ) -> Self {
+        Self {
+            sender,
+            trigger,
+            pusher_status,
+        }
+    }
+
+    pub fn create_job(
+        keypair: Keypair,
+        trigger: WorkTrigger,
+        pusher_status: PusherStatus,
+    ) -> (TransactionJob, TransactionProcessor) {
         // Capacity 1: combined with `send().await` on the producer side and
         // a per-tick `oneshot` ack from the consumer, this enforces "at most
         // one tick in flight at a time." The producer cannot issue a new
@@ -210,7 +238,7 @@ impl TransactionJob {
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
 
         (
-            TransactionJob::new(sender),
+            TransactionJob::with_trigger(sender, trigger, pusher_status),
             TransactionProcessor::new(keypair, receiver),
         )
     }
@@ -254,30 +282,28 @@ impl TransactionJob {
         // quiet, we should rejoin the stream from the beginning on our
         // next poll.
         let mut cursor: Option<String> = None;
+        let mut fetch_now = true; // Mandatory startup catch-up.
+        let mut failure_count = 0u32;
+        let mut pusher_aware_poll = self.pusher_status.poller();
 
         loop {
-            // Sleep when there is no work to do (or on error). When a
-            // non-empty page was successfully delivered, we immediately
-            // re-poll. Two distinct reasons motivate the no-sleep path:
-            //
-            //   * Drain-in-progress: the server returned a `nextCursor`,
-            //     meaning more pending transactions are waiting. We
-            //     hand off the 25-tx batch to the consumer, await its
-            //     ack, then immediately re-poll with the carried-over
-            //     cursor to pick up the next 25.
-            //
-            //   * No cursor but the queue may have grown: signing can
-            //     take several seconds; new transactions may have
-            //     arrived while we were signing the previous batch.
-            //     Re-polling immediately picks those up.
-            //
-            // Critically, we await the consumer's ack between sending a
-            // tick and the next poll. Without that, the producer can race
-            // ahead and re-fetch the same uuid multiple times before the
-            // consumer has submitted the corresponding `SignTransactions`
-            // mutation, causing the same uuid to be signed with consecutive
-            // nonces and rejected by the platform.
-            let should_sleep = match self.get_pending_transactions(cursor.clone()).await {
+            if !fetch_now {
+                tokio::select! {
+                    _ = self.trigger.wait_until_ready() => {}
+                    _ = pusher_aware_poll.tick() => {}
+                }
+            }
+
+            // A fresh scan consumes every event/force that existed before
+            // this request. Cursor continuations deliberately retain events
+            // received during the scan so they can force a restart at the end.
+            let fresh_lookup = cursor.is_none();
+            if fresh_lookup {
+                self.trigger.begin_fresh_lookup();
+            }
+            fetch_now = false;
+
+            match self.get_pending_transactions(cursor.clone()).await {
                 Ok((transaction_reqs, next_cursor)) => {
                     // Treat an empty `Ok` (e.g. every item on the page
                     // failed `TryFrom`) the same as `NO_TRANSACTIONS_MSG`:
@@ -292,8 +318,19 @@ impl TransactionJob {
                             self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
                                 .await?;
                         }
-                        true
+                        if fresh_lookup {
+                            self.trigger.finish_empty_lookup();
+                        } else {
+                            fetch_now = self.trigger.finish_batch();
+                        }
+                        failure_count = 0;
                     } else {
+                        let request_ids = transaction_reqs
+                            .iter()
+                            .map(|request| request.request_id.clone())
+                            .collect::<Vec<_>>();
+                        self.trigger.set_active(request_ids);
+
                         let active: HashSet<ChainKey> = transaction_reqs
                             .iter()
                             .map(|r| (r.network, r.chain))
@@ -302,14 +339,31 @@ impl TransactionJob {
                             seen_chains.difference(&active).copied().collect();
                         seen_chains.extend(active.iter().copied());
 
-                        self.send_tick_and_wait(transaction_reqs, idle, "transaction requests")
+                        let outcome = self
+                            .send_tick_and_wait(transaction_reqs, idle, "transaction requests")
                             .await?;
-                        no_transaction_count = 0;
-                        // Carry the cursor forward for the next poll
-                        // when the server says there is more pending,
-                        // and clear it otherwise.
-                        cursor = next_cursor;
-                        false
+                        let deferred = self.trigger.finish_batch();
+
+                        match outcome {
+                            BatchOutcome::Completed => {
+                                failure_count = 0;
+                                no_transaction_count = 0;
+                                cursor = next_cursor;
+                                fetch_now = cursor.is_some() || deferred;
+                            }
+                            BatchOutcome::NeedsRefetch => {
+                                cursor = None;
+                                self.trigger.force();
+                                let delay = crate::retry::jittered_exponential_delay(failure_count);
+                                failure_count = failure_count.saturating_add(1);
+                                tracing::warn!(
+                                    "Transaction batch needs a fresh lookup; retrying in {:.1}s",
+                                    delay.as_secs_f64(),
+                                );
+                                sleep(delay).await;
+                                fetch_now = true;
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -330,15 +384,26 @@ impl TransactionJob {
                             self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
                                 .await?;
                         }
+                        if fresh_lookup {
+                            self.trigger.finish_empty_lookup();
+                        } else {
+                            fetch_now = self.trigger.finish_batch();
+                        }
+                        failure_count = 0;
                     } else {
                         tracing::error!("Error: {}", e);
+                        self.trigger.finish_empty_lookup();
+                        self.trigger.force();
+                        let delay = crate::retry::jittered_exponential_delay(failure_count);
+                        failure_count = failure_count.saturating_add(1);
+                        tracing::warn!(
+                            "Retrying GetPendingTransactions in {:.1}s",
+                            delay.as_secs_f64(),
+                        );
+                        sleep(delay).await;
+                        fetch_now = true;
                     }
-                    true
                 }
-            };
-
-            if should_sleep {
-                sleep(Duration::from_millis(TRANSACTION_POLLER_MS)).await;
             }
         }
     }
@@ -373,7 +438,7 @@ impl TransactionJob {
         batch: Vec<TransactionRequest>,
         idle: HashSet<ChainKey>,
         kind: &str,
-    ) -> Result<(), TickDispatchError> {
+    ) -> Result<BatchOutcome, TickDispatchError> {
         let (ack_tx, ack_rx) = oneshot::channel();
         let tick = ProcessorTick {
             batch,
@@ -384,11 +449,13 @@ impl TransactionJob {
             tracing::error!("Failed to send {kind} to processor: {e:?}");
             return Err(TickDispatchError::ConsumerGone);
         }
-        if let Err(e) = ack_rx.await {
-            tracing::error!("Processor dropped ack for {kind} without signaling: {e:?}");
-            return Err(TickDispatchError::AckDropped);
+        match ack_rx.await {
+            Ok(outcome) => Ok(outcome),
+            Err(e) => {
+                tracing::error!("Processor dropped ack for {kind} without signaling: {e:?}");
+                Err(TickDispatchError::AckDropped)
+            }
         }
-        Ok(())
     }
 
     /// Fetch one page (up to `TRANSACTION_PAGE_SIZE` items) of pending
@@ -471,7 +538,7 @@ impl TransactionProcessor {
         keypair: Keypair,
         nonces: &mut HashMap<NonceKey, u64>,
         requests: Vec<TransactionRequest>,
-    ) {
+    ) -> BatchOutcome {
         // Derive the signer for every request up-front so we can both
         // pre-fetch nonces and reuse the keypair in the main signing loop.
         let signers: Vec<Keypair> = requests
@@ -813,8 +880,10 @@ impl TransactionProcessor {
             tracing::debug!(
                 "SignTransactions: nothing to submit (all {request_count} request(s) in this batch were skipped)",
             );
-            return;
+            return BatchOutcome::NeedsRefetch;
         }
+
+        let submitted_count = inputs.len();
 
         // Snapshot the uuids actually queued for submission so we can name
         // them in the rollback log if the platform mutation fails.
@@ -838,6 +907,12 @@ impl TransactionProcessor {
             tracing::error!(
                 "Platform SignTransactions failed; evicting nonce cache for affected chains so the next batch will re-fetch from chain. error={e} chains={chains:?} uuids={submitted_uuids:?} evicted={evicted}",
             );
+            BatchOutcome::NeedsRefetch
+        } else if submitted_count < request_count {
+            // Some requests were skipped before submission and remain pending.
+            BatchOutcome::NeedsRefetch
+        } else {
+            BatchOutcome::Completed
         }
     }
 
@@ -869,15 +944,17 @@ impl TransactionProcessor {
                 }
             }
 
-            if !batch.is_empty() {
-                Self::transaction_handler(self.keypair.clone(), &mut self.nonces, batch).await;
-            }
+            let outcome = if batch.is_empty() {
+                BatchOutcome::Completed
+            } else {
+                Self::transaction_handler(self.keypair.clone(), &mut self.nonces, batch).await
+            };
 
             // Always signal the producer, even on an empty batch (idle
             // ticks still need an ack to release the producer). Failure
             // here means the producer has already gone away, which would
             // mean the daemon is shutting down — nothing actionable.
-            let _ = ack.send(());
+            let _ = ack.send(outcome);
         }
     }
 

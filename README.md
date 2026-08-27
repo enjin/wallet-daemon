@@ -1,10 +1,10 @@
 # Enjin Wallet Daemon
 
-A lightweight outbound-only signer for Enjin Platform Cloud transactions.
+A lightweight outbound-only signer for Enjin Platform transactions.
 
 [![License: LGPL 3.0](https://img.shields.io/badge/license-LGPL_3.0-purple)](https://opensource.org/license/lgpl-3-0/)
 
-The daemon polls Enjin Platform Cloud for pending transactions, signs them with the configured wallet, and returns signed payloads to the platform for broadcast. It does not accept inbound transaction requests, so the host running the daemon should not expose public ports for daemon traffic.
+The daemon listens for authenticated Enjin Platform WebSocket events, fetches pending work through GraphQL, signs it with the configured wallet, and returns signed payloads to the platform for broadcast. A five-minute safety poll covers missed events while the subscription is healthy; if Pusher is unavailable, the daemon automatically resumes six-second polling until the authenticated subscription is restored. It does not accept inbound transaction requests, so the host running the daemon should not expose public ports for daemon traffic.
 
 For the full user guide, including binary downloads, Docker, AWS CloudFormation, import, export, and migration workflows, see [Using the Wallet Daemon](https://docs.enjin.io/getting-started/using-wallet-daemon).
 
@@ -14,7 +14,7 @@ The daemon is security-sensitive.
 
 - It stores an encrypted `wallet.seed` file on disk.
 - `KEY_PASS` encrypts and decrypts `wallet.seed`.
-- `PLATFORM_KEY` authenticates the daemon with Enjin Platform Cloud.
+- `PLATFORM_KEY` authenticates the daemon with Enjin Platform.
 
 Back up `wallet.seed` and `KEY_PASS` separately. Losing either value can make the wallet unrecoverable. Do not rotate `KEY_PASS` for an existing `wallet.seed`; changing `KEY_PASS` is not currently supported.
 
@@ -27,8 +27,11 @@ The daemon reads configuration from environment variables or a local `.env` file
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `KEY_PASS` | Yes | Password used to encrypt and decrypt `wallet.seed`. Use a unique, high-entropy value. |
-| `PLATFORM_KEY` | Yes | Enjin Platform Cloud API token used by the daemon. |
+| `PLATFORM_KEY` | Yes | Enjin Platform API token used by the daemon. |
 | `SEED_PATH` | No | Optional path to a seed file or seed directory. |
+| `PLATFORM_URL` | No | GraphQL daemon endpoint. Defaults to `https://platform.enjin.io/graphql/daemon`. |
+| `PUSHER_APP_KEY` | No | Pusher application key. Defaults to Enjin Platform's published key. |
+| `PUSHER_CLUSTER` | No | Pusher cluster. Defaults to `us2`. |
 
 Minimal `.env`:
 

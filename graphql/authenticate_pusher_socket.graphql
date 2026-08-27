@@ -1,0 +1,6 @@
+mutation AuthenticatePusherSocket($id: String!) {
+  result: AuthenticatePusherSocket(id: $id) {
+    auth
+    channel
+  }
+}
