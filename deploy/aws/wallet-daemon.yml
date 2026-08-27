@@ -23,7 +23,7 @@ Parameters:
     Description: "API token generated in Enjin Platform. Must be at least 50 characters. Stored in Secrets Manager and injected as PLATFORM_KEY."
   WalletDaemonImage:
     Type: String
-    Default: "enjin/wallet-daemon:v3.0.6"
+    Default: "enjin/wallet-daemon:v3.0.10"
     MinLength: 1
     Description: "Versioned Docker image to run. Do not use latest for production deployments."
 
