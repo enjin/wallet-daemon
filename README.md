@@ -46,6 +46,10 @@ Updating `PlatformApiToken` changes its Secrets Manager value, but an already-ru
 
 The generated EFS file system and `KEY_PASS` secret are retained when the stack is deleted. To recreate the stack with the same wallet identity, pass the previous `WalletSeedFileSystemId` and `KeyPassSecretArn` outputs as `ExistingWalletSeedFileSystemId` and `ExistingKeyPassSecretArn`. Supply both values together; leaving both empty intentionally creates a new wallet.
 
+> **Every later `update-stack` on a recovery-mode stack must re-supply both `Existing*` values.** CloudFormation applies a parameter's default to any parameter omitted from an `update-stack` call, and the default for both is empty. Omitting them — for example in a CI job that only rolls the image — reverts the stack to "create a new wallet": a new empty EFS file system and a new `KEY_PASS` are created and the daemon starts signing from a different address. The previous wallet is not destroyed (both resources are retained and their ids remain in the old stack's outputs), but nothing fails loudly. Always pass `ParameterKey=ExistingWalletSeedFileSystemId,UsePreviousValue=true` and the same for `ExistingKeyPassSecretArn`, or use the console update flow, which pre-populates existing values. CloudFormation cannot express "this parameter was previously non-empty", so there is no template-level guard for this — the daemon does log a warning when it generates a new wallet identity, so watch for it after any stack update.
+
+Recovery also requires the previous stack's EFS mount targets to be gone: a file system can only have mount targets in one VPC, and the new stack creates its own VPC. Delete the old stack (or its mount targets) before creating the replacement; a side-by-side rehearsal fails with `MountTargetConflict` and rolls back.
+
 ### Windows / PowerShell
 
 The `.env` file must be UTF-8. Windows PowerShell 5.1 writes UTF-16 by default
@@ -98,6 +102,22 @@ The published image is available on [Docker Hub](https://hub.docker.com/r/enjin/
 
 ```bash
 cargo test
+```
+
+This runs the unit tests plus an end-to-end suite (`tests/daemon_end_to_end.rs`)
+that starts the real daemon binary against a mock Enjin Platform
+(`tests/support/mod.rs`) on loopback. The daemon obtains chain metadata from the
+platform via `GetChainInfo`, so the mock can drive the full fetch/sign/submit
+path with no chain, no funds and no external network — including the failure
+paths a live platform will not reproduce on demand: multi-page scans, rows that
+cannot be signed, a platform outage, and a server that repeats its cursor.
+
+The outage test deliberately measures elapsed time to prove the retry backoff
+escalates rather than becoming a request storm, so the suite takes ~25 seconds.
+To run only the fast unit tests:
+
+```bash
+cargo test --bins
 ```
 
 ## License

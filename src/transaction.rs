@@ -352,6 +352,9 @@ impl TransactionJob {
         let mut fetch_now = true; // Mandatory startup catch-up.
         let mut failure_count = 0u32;
         let mut scan_retry = ScanRetryState::default();
+        // Consecutive pages in the current scan that contained no convertible
+        // rows. Bounds the unpaced drain past malformed data.
+        let mut empty_pages = 0u32;
         let mut pusher_aware_poll = self.pusher_status.poller();
 
         loop {
@@ -373,14 +376,30 @@ impl TransactionJob {
             match self.get_pending_transactions(cursor.clone()).await {
                 Ok((transaction_reqs, next_cursor)) => {
                     if transaction_reqs.is_empty() {
-                        if next_cursor.is_some() {
-                            // The raw page existed but every item failed
-                            // conversion. Keep draining so later healthy pages
-                            // are not hidden behind malformed data.
+                        // Keep draining past a page whose rows all failed
+                        // conversion so later healthy pages are not hidden
+                        // behind malformed data — but only while the cursor
+                        // actually advances, and only for a bounded run, so a
+                        // large block of malformed rows (or a server that
+                        // returns the same cursor) cannot become an unpaced
+                        // request storm.
+                        if crate::retry::should_continue_empty_drain(
+                            cursor.as_deref(),
+                            next_cursor.as_deref(),
+                            empty_pages,
+                        ) {
+                            empty_pages += 1;
                             cursor = next_cursor;
                             scan_retry.require();
                             fetch_now = true;
                         } else {
+                            if next_cursor.is_some() {
+                                tracing::warn!(
+                                    "Abandoning cursor scan after {empty_pages} page(s) containing no convertible transactions; restarting from a fresh lookup",
+                                );
+                                scan_retry.require();
+                            }
+                            empty_pages = 0;
                             cursor = None;
                             let idle = complete_chain_scan(
                                 &mut previous_scan_chains,
@@ -401,6 +420,7 @@ impl TransactionJob {
                                 .await;
                         }
                     } else {
+                        empty_pages = 0;
                         let active: HashSet<ChainKey> = transaction_reqs
                             .iter()
                             .map(|request| (request.network, request.chain))
@@ -425,7 +445,6 @@ impl TransactionJob {
                                 requires_fresh_retry,
                             } => {
                                 if made_progress {
-                                    failure_count = 0;
                                     no_transaction_count = 0;
                                 }
                                 if requires_fresh_retry {
@@ -448,15 +467,14 @@ impl TransactionJob {
                                 cursor = None;
                                 current_scan_chains.clear();
                                 scan_retry.clear();
+                                empty_pages = 0;
                                 let delay = crate::retry::jittered_exponential_delay(failure_count);
                                 failure_count = failure_count.saturating_add(1);
                                 tracing::warn!(
                                     "Transaction batch made no progress; retrying a fresh lookup in {:.1}s",
                                     delay.as_secs_f64(),
                                 );
-                                if !deferred {
-                                    self.wait_for_retry_or_trigger(delay).await;
-                                }
+                                self.wait_for_retry_or_trigger(delay).await;
                                 fetch_now = true;
                             }
                         }
@@ -467,6 +485,7 @@ impl TransactionJob {
                     // is meaningless after we've lost our place in the
                     // server-side scan.
                     cursor = None;
+                    empty_pages = 0;
                     if e.to_string() == NO_TRANSACTIONS_MSG {
                         if no_transaction_count % 10 == 0 {
                             tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
@@ -529,16 +548,21 @@ impl TransactionJob {
             "Transaction scan left pending work; retrying a fresh lookup in {:.1}s",
             delay.as_secs_f64(),
         );
-        if !deferred {
-            self.wait_for_retry_or_trigger(delay).await;
-        }
+        // The delay is honoured even when `deferred` — work we already know
+        // about is exactly what this scan failed to make progress on, so
+        // letting it skip the backoff would remove all pacing.
+        self.wait_for_retry_or_trigger(delay).await;
         true
     }
 
+    /// Wait out a failure delay. Work that arrives *during* the delay cuts it
+    /// short; work that was already pending when the failure occurred does
+    /// not, so a failing platform can never be turned into an unpaced storm
+    /// of requests.
     async fn wait_for_retry_or_trigger(&self, delay: std::time::Duration) {
         tokio::select! {
             _ = sleep(delay) => {}
-            _ = self.trigger.wait_until_ready() => {
+            _ = self.trigger.wait_for_new_event() => {
                 tracing::info!("New transaction work interrupted the retry delay");
             }
         }

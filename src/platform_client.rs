@@ -101,6 +101,22 @@ pub async fn populate_managed_wallets(
     match res {
         Ok(r) => {
             tracing::debug!("Response from platform: {:?}", r);
+            // The mutation returns `Boolean!`. A `false` is a business-level
+            // rejection, not a transport error: treating it as success would
+            // advance the cursor and log "Updated wallet" lines for wallets the
+            // platform did not populate, leaving the rows to reappear on every
+            // subsequent scan with nothing in the logs to explain it.
+            if !r.result {
+                return Err(format!(
+                    "Platform rejected PopulateManagedWallets for {} wallet(s): {:?}",
+                    external_ids_and_accounts.len(),
+                    external_ids_and_accounts
+                        .iter()
+                        .map(|(external_id, _)| external_id.as_str())
+                        .collect::<Vec<_>>(),
+                )
+                .into());
+            }
             for (external_id, account) in external_ids_and_accounts {
                 tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
             }

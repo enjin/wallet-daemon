@@ -53,4 +53,9 @@ clap = { version = "4.6.1", features = ["derive"] }
 [dev-dependencies]
 tempfile = "3.15"
 sp-crypto-hashing = "0.1"
-tokio = { version = "1.47.1", features = ["test-util"] }
+tokio = { version = "1.47.1", features = ["test-util", "process"] }
+# Mock Enjin Platform used by the end-to-end daemon tests. These crates are
+# already in the dependency graph via reqwest; only the server features are new.
+hyper = { version = "1.9.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+http-body-util = "0.1.3"

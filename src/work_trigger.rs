@@ -187,6 +187,37 @@ impl WorkTrigger {
         }
     }
 
+    /// Wait for a notification that arrives strictly *after* this call.
+    ///
+    /// Unlike [`WorkTrigger::wait_until_ready`], already-pending state does
+    /// not satisfy this. `wait_until_ready` is a pure observer of state that
+    /// only `begin_fresh_lookup` clears, so using it to shorten a failure
+    /// backoff lets work the caller already knows about pre-empt the delay
+    /// on every iteration — turning a failing platform into an unpaced
+    /// request storm. A failure delay must be honoured against known work
+    /// and interrupted only by something genuinely new.
+    pub(crate) async fn wait_for_new_event(&self) {
+        let (baseline_generation, baseline_forced) = {
+            let state = self.state();
+            (state.event_generation, state.forced)
+        };
+
+        loop {
+            // Register before checking state so a notification racing with
+            // the check is retained by `Notify` instead of being lost.
+            let notified = self.inner.notify.notified();
+            {
+                let state = self.state();
+                if state.event_generation != baseline_generation
+                    || (state.forced && !baseline_forced)
+                {
+                    return;
+                }
+            }
+            notified.await;
+        }
+    }
+
     /// Start a lookup from `cursor: None`. Notifications already pending are
     /// covered by this authoritative scan. A generation change after this
     /// call forces another scan after the current work finishes.
@@ -229,6 +260,7 @@ impl Default for WorkTrigger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::timeout;
 
     #[tokio::test(start_paused = true)]
     async fn polls_every_six_seconds_while_pusher_is_unavailable() {
@@ -430,6 +462,72 @@ mod tests {
         assert!(!state.forced);
         assert_eq!(state.pending_event_count, 0);
         assert!(state.lookup_generation.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn already_pending_work_does_not_satisfy_wait_for_new_event() {
+        // This is what keeps a failure backoff paced. `wait_until_ready` is a
+        // pure observer of state that only `begin_fresh_lookup` clears, so
+        // using it to shorten a retry delay lets work we already know about
+        // cancel the delay on every iteration.
+        let trigger = WorkTrigger::new();
+        trigger.record_event();
+
+        // `wait_until_ready` is satisfied immediately by the pending event...
+        tokio::time::advance(EVENT_DEBOUNCE).await;
+        timeout(Duration::from_millis(10), trigger.wait_until_ready())
+            .await
+            .expect("pending work satisfies wait_until_ready");
+
+        // ...but the retry wait is not.
+        let waiting = tokio::spawn({
+            let trigger = trigger.clone();
+            async move { trigger.wait_for_new_event().await }
+        });
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !waiting.is_finished(),
+            "work pending before the delay began must not cancel it",
+        );
+
+        // Only something genuinely new releases it.
+        trigger.record_event();
+        waiting.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_force_during_the_delay_satisfies_wait_for_new_event() {
+        let trigger = WorkTrigger::new();
+        let waiting = tokio::spawn({
+            let trigger = trigger.clone();
+            async move { trigger.wait_for_new_event().await }
+        });
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        trigger.force();
+        waiting.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_force_already_set_does_not_satisfy_wait_for_new_event() {
+        // A reconnect force that is still outstanding is exactly the work the
+        // failing scan could not complete; it must not cancel the backoff.
+        let trigger = WorkTrigger::new();
+        trigger.force();
+
+        let waiting = tokio::spawn({
+            let trigger = trigger.clone();
+            async move { trigger.wait_for_new_event().await }
+        });
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        trigger.record_event();
+        waiting.await.unwrap();
     }
 
     #[test]

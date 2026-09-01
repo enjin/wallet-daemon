@@ -16,6 +16,13 @@ const DEFAULT_PUSHER_CLUSTER: &str = "us2";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const PONG_TIMEOUT: Duration = Duration::from_secs(30);
 const MIN_STABLE_SUBSCRIPTION: Duration = Duration::from_secs(30);
+/// Bounds on the server-supplied `activity_timeout`. The lower bound keeps a
+/// zero from producing a hot ping loop; the upper bound keeps an absurd value
+/// from overflowing `Instant + Duration` (a panic) or silently disabling the
+/// keepalive so a half-open socket is never detected. Pusher's own value is
+/// 120s.
+const MIN_ACTIVITY_TIMEOUT_SECS: u64 = 1;
+const MAX_ACTIVITY_TIMEOUT_SECS: u64 = 600;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -175,7 +182,11 @@ impl PusherConnection {
 
         Ok((
             socket,
-            Duration::from_secs(established.activity_timeout.max(1)),
+            Duration::from_secs(
+                established
+                    .activity_timeout
+                    .clamp(MIN_ACTIVITY_TIMEOUT_SECS, MAX_ACTIVITY_TIMEOUT_SECS),
+            ),
             expected_channel,
         ))
     }
@@ -268,7 +279,46 @@ fn decode_data<T: for<'de> Deserialize<'de>>(data: Value) -> Result<T, BoxError>
 }
 
 fn pusher_error(data: Value) -> BoxError {
-    format!("Pusher protocol error: {data}").into()
+    // Never format the raw payload: a Pusher invalid-signature error echoes the
+    // submitted `auth` string back, which would defeat `redact_auth` by writing
+    // the signature to the logs at `warn!` level.
+    // Pusher sends `data` either as an object or as a JSON-encoded string.
+    // Keep the original around: a payload that is not valid JSON is still a
+    // plain diagnostic message worth reporting.
+    let decoded = match &data {
+        Value::String(encoded) => serde_json::from_str::<Value>(encoded).unwrap_or(Value::Null),
+        other => other.clone(),
+    };
+    let code = decoded
+        .get("code")
+        .and_then(Value::as_i64)
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let message = decoded
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| data.as_str())
+        .map(redact_pusher_message)
+        .unwrap_or_else(|| "no message".to_string());
+    format!("Pusher protocol error (code {code}): {message}").into()
+}
+
+/// Pusher error messages are operator-facing text, but the invalid-signature
+/// variant embeds the credentials that were submitted. Keep the wording and
+/// drop anything that looks like an app-key-prefixed signature.
+fn redact_pusher_message(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(|word| {
+            let candidate = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':');
+            if candidate.contains(':') && candidate.len() >= 32 {
+                "[redacted]"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn valid_component(value: &str) -> bool {
@@ -410,6 +460,71 @@ mod tests {
             .expect("listener must stop after the server closes")
             .expect("listener task must not panic");
         assert!(listen_result.is_err());
+    }
+
+    #[test]
+    fn pusher_errors_report_the_code_without_echoing_the_submitted_auth() {
+        // Pusher's invalid-signature error quotes the auth string back at us.
+        // Formatting the raw payload would write it to the logs at warn!,
+        // defeating the redaction applied on the request side.
+        let auth =
+            "8ab7ab8c519e8f59b635:0d1f4a9c7b3e2d5a8f6c0b9e4d7a2c5f8b1e3d6a9c2f5b8e1d4a7c0f3b6e9d2a";
+        let error = pusher_error(json!({
+            "code": 4009,
+            "message": format!("Invalid signature: Expected HMAC SHA256 hex digest of ..., but received {auth}"),
+        }))
+        .to_string();
+
+        assert!(error.contains("4009"), "the code must survive: {error}");
+        assert!(
+            !error.contains(auth),
+            "the submitted auth must not reach the logs: {error}",
+        );
+    }
+
+    #[test]
+    fn a_plain_string_pusher_error_keeps_its_message_but_still_redacts() {
+        let auth =
+            "8ab7ab8c519e8f59b635:0d1f4a9c7b3e2d5a8f6c0b9e4d7a2c5f8b1e3d6a9c2f5b8e1d4a7c0f3b6e9d2a";
+        let error =
+            pusher_error(Value::String(format!("connection refused for {auth}"))).to_string();
+        assert!(error.contains("connection refused"));
+        assert!(!error.contains(auth), "{error}");
+    }
+
+    #[test]
+    fn pusher_errors_survive_a_missing_code_or_message() {
+        let error = pusher_error(json!({})).to_string();
+        assert!(error.contains("unknown"));
+        assert!(error.contains("no message"));
+    }
+
+    #[test]
+    fn pusher_errors_decode_json_encoded_payloads() {
+        let error = pusher_error(Value::String(
+            r#"{"code":4001,"message":"App key not found"}"#.to_string(),
+        ))
+        .to_string();
+        assert!(error.contains("4001"));
+        assert!(error.contains("App key not found"));
+    }
+
+    #[test]
+    fn activity_timeout_is_clamped_at_both_ends() {
+        assert_eq!(
+            0u64.clamp(MIN_ACTIVITY_TIMEOUT_SECS, MAX_ACTIVITY_TIMEOUT_SECS),
+            1
+        );
+        assert_eq!(
+            120u64.clamp(MIN_ACTIVITY_TIMEOUT_SECS, MAX_ACTIVITY_TIMEOUT_SECS),
+            120
+        );
+        // Without the upper bound this overflows `Instant + Duration`.
+        assert_eq!(
+            u64::MAX.clamp(MIN_ACTIVITY_TIMEOUT_SECS, MAX_ACTIVITY_TIMEOUT_SECS),
+            MAX_ACTIVITY_TIMEOUT_SECS,
+        );
+        let _ = Instant::now() + Duration::from_secs(MAX_ACTIVITY_TIMEOUT_SECS);
     }
 
     #[test]

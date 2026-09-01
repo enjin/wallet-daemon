@@ -36,12 +36,12 @@ Parameters:
     Type: String
     Default: ""
     AllowedPattern: "^$|^fs-[0-9a-fA-F]+$"
-    Description: "For stack recovery, provide the retained WalletSeedFileSystemId output from the previous stack together with ExistingKeyPassSecretArn. Leave both empty for a new wallet."
+    Description: "For stack recovery, provide the retained WalletSeedFileSystemId output from the previous stack together with ExistingKeyPassSecretArn. Leave both empty for a new wallet. WARNING: once set, EVERY later update-stack must re-supply this value (UsePreviousValue=true). Omitting it silently reverts to the empty default, which creates a NEW empty file system and a NEW KEY_PASS, and the daemon then mints a different wallet identity."
   ExistingKeyPassSecretArn:
     Type: String
     Default: ""
     AllowedPattern: "^$|^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$"
-    Description: "For stack recovery, provide the retained KeyPassSecretArn output from the previous stack together with ExistingWalletSeedFileSystemId. Leave both empty for a new wallet."
+    Description: "For stack recovery, provide the retained KeyPassSecretArn output from the previous stack together with ExistingWalletSeedFileSystemId. Leave both empty for a new wallet. WARNING: once set, EVERY later update-stack must re-supply this value (UsePreviousValue=true). Omitting it silently reverts to the empty default, which creates a NEW empty file system and a NEW KEY_PASS, and the daemon then mints a different wallet identity."
 
 Rules:
   ExistingWalletResourcesMustBeProvidedTogether:

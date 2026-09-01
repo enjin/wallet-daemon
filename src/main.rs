@@ -45,6 +45,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load `.env` (transcoding UTF-16 to UTF-8) before any `dotenvy::var` call.
     env_loader::load_env();
 
+    // init logging before anything that can emit a warning. `load_seed` warns
+    // when it is about to generate a NEW wallet identity, and subcommands such
+    // as `print-seed` call it, so a subscriber installed after the subcommand
+    // match would silently swallow exactly the warning that matters most.
+    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(log_filter))
+        .finish()
+        .try_init()?;
+
     let seed_path = resolve_seed_path(dotenvy::var("SEED_PATH").ok().as_deref());
 
     // check for subcommands
@@ -72,13 +82,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // if there is no subcommand, run the daemon
         }
     }
-
-    // init logging
-    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(log_filter))
-        .finish()
-        .try_init()?;
 
     let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
     let keypair = load_seed(seed_path, &key_pass, false);
@@ -139,13 +142,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         DeriveWalletJob::create_job(keypair, wallet_trigger.clone(), pusher_status.clone());
     let websocket = PusherConnection::from_env(transaction_trigger, wallet_trigger, pusher_status)?;
 
-    tokio::select! {
-        _ = websocket.start() => {}
-        _ = matrix_tx_poller.start() => {}
-        _ = matrix_tx_processor.start() => {}
-        _ = wallet_poller.start() => {}
-        _ = wallet_processor.start() => {}
+    // Every one of these tasks is supposed to run for the life of the process.
+    // If any of them completes — returning, or panicking and resolving the
+    // `JoinHandle` to `Err(JoinError)` — the daemon has lost a component it
+    // cannot rebuild, and in-flight batches are gone. Exit non-zero so a
+    // supervisor (systemd `Restart=on-failure`, ECS, Docker) actually restarts
+    // it; returning `Ok(())` here would look like a clean shutdown and leave a
+    // dead signer in place.
+    let (task, result) = tokio::select! {
+        result = websocket.start() => ("pusher websocket", result),
+        result = matrix_tx_poller.start() => ("transaction poller", result),
+        result = matrix_tx_processor.start() => ("transaction processor", result),
+        result = wallet_poller.start() => ("managed-wallet poller", result),
+        result = wallet_processor.start() => ("managed-wallet processor", result),
+    };
+
+    match result {
+        Ok(()) => tracing::error!("The {task} task exited unexpectedly; shutting down"),
+        Err(error) => tracing::error!("The {task} task terminated abnormally: {error}"),
     }
 
-    Ok(())
+    exit(1);
 }

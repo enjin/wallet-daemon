@@ -223,6 +223,21 @@ pub fn load_wallet(seed_path: &Path, key_pass: &str, print_kind: PrintKind) -> K
         );
     }
 
+    if print_kind == PrintKind::Seed {
+        // Identify which wallet was just printed so an operator recovering a
+        // daemon can confirm it is the expected one rather than a freshly
+        // minted identity. This goes to stderr so stdout stays exactly the
+        // mnemonic for scripted use.
+        eprintln!(
+            "** Enjin Matrixchain  (SS58): {}",
+            account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
+        );
+        eprintln!(
+            "** Public Key          (Hex): 0x{}",
+            hex::encode(public_key)
+        );
+    }
+
     signer
 }
 
