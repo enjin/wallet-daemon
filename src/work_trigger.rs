@@ -5,7 +5,7 @@ use tokio::time::{Instant, sleep_until};
 
 pub(crate) const EVENT_TRIGGER_LIMIT: usize = 25;
 pub(crate) const EVENT_DEBOUNCE: Duration = Duration::from_millis(500);
-pub(crate) const SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(300);
+pub(crate) const SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(180);
 pub(crate) const PUSHER_OUTAGE_POLL_INTERVAL: Duration = Duration::from_secs(6);
 
 #[derive(Clone, Debug)]
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_connected_subscription_uses_the_five_minute_safety_poll() {
+    async fn a_connected_subscription_uses_the_safety_poll() {
         let status = PusherStatus::new();
         status.set_connected(true);
         let mut poller = status.poller();
@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn restoring_pusher_restarts_the_five_minute_timer() {
+    async fn restoring_pusher_restarts_the_safety_poll_timer() {
         let status = PusherStatus::new();
         let mut poller = status.poller();
         let waiting = tokio::spawn(async move { poller.tick().await });

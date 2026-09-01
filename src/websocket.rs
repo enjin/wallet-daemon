@@ -83,7 +83,7 @@ impl PusherConnection {
                 Ok((socket, activity_timeout, channel)) => {
                     self.status.set_connected(true);
                     tracing::info!(
-                        "Pusher WebSocket subscribed successfully; using five-minute safety polling"
+                        "Pusher WebSocket subscribed successfully; using three-minute safety polling"
                     );
 
                     // Pusher does not replay messages missed while disconnected.

@@ -4,7 +4,7 @@ A lightweight outbound-only signer for Enjin Platform transactions.
 
 [![License: LGPL 3.0](https://img.shields.io/badge/license-LGPL_3.0-purple)](https://opensource.org/license/lgpl-3-0/)
 
-The daemon listens for authenticated Enjin Platform WebSocket events, fetches pending work through GraphQL, signs it with the configured wallet, and returns signed payloads to the platform for broadcast. A five-minute safety poll covers missed events while the subscription is healthy; if Pusher is unavailable, the daemon automatically resumes six-second polling until the authenticated subscription is restored. It does not accept inbound transaction requests, so the host running the daemon should not expose public ports for daemon traffic.
+The daemon listens for authenticated Enjin Platform WebSocket events, fetches pending work through GraphQL, signs it with the configured wallet, and returns signed payloads to the platform for broadcast. A three-minute safety poll covers missed events while the subscription is healthy; if Pusher is unavailable, the daemon automatically resumes six-second polling until the authenticated subscription is restored. It does not accept inbound transaction requests, so the host running the daemon should not expose public ports for daemon traffic.
 
 For the full user guide, including binary downloads, Docker, AWS CloudFormation, import, export, and migration workflows, see [Using the Wallet Daemon](https://docs.enjin.io/getting-started/using-wallet-daemon).
 

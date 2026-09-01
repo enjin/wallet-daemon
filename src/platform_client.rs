@@ -100,7 +100,7 @@ pub async fn populate_managed_wallets(
 
     match res {
         Ok(r) => {
-            tracing::info!("Response from platform: {:?}", r);
+            tracing::debug!("Response from platform: {:?}", r);
             for (external_id, account) in external_ids_and_accounts {
                 tracing::info!("Updated wallet (externalId: {external_id}) to {account}");
             }
