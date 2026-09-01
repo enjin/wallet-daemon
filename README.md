@@ -40,6 +40,12 @@ KEY_PASS=your-unique-key-password
 PLATFORM_KEY=your-platform-api-token
 ```
 
+### AWS CloudFormation lifecycle
+
+Updating `PlatformApiToken` changes its Secrets Manager value, but an already-running ECS task does not reread secrets. After the stack update completes, run the command exposed by the stack's `PlatformApiTokenRestartCommand` output to force a replacement task.
+
+The generated EFS file system and `KEY_PASS` secret are retained when the stack is deleted. To recreate the stack with the same wallet identity, pass the previous `WalletSeedFileSystemId` and `KeyPassSecretArn` outputs as `ExistingWalletSeedFileSystemId` and `ExistingKeyPassSecretArn`. Supply both values together; leaving both empty intentionally creates a new wallet.
+
 ### Windows / PowerShell
 
 The `.env` file must be UTF-8. Windows PowerShell 5.1 writes UTF-16 by default

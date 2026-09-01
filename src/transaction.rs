@@ -50,7 +50,32 @@ enum TickDispatchError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BatchOutcome {
     Completed,
-    NeedsRefetch,
+    PartialProgress,
+    Skipped,
+    SubmissionFailed,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum BatchStep {
+    Continue {
+        cursor: Option<String>,
+        made_progress: bool,
+    },
+    RetryFresh,
+}
+
+fn batch_step(outcome: BatchOutcome, next_cursor: Option<String>) -> BatchStep {
+    match outcome {
+        BatchOutcome::Completed | BatchOutcome::PartialProgress => BatchStep::Continue {
+            cursor: next_cursor,
+            made_progress: true,
+        },
+        BatchOutcome::Skipped if next_cursor.is_some() => BatchStep::Continue {
+            cursor: next_cursor,
+            made_progress: false,
+        },
+        BatchOutcome::Skipped | BatchOutcome::SubmissionFailed => BatchStep::RetryFresh,
+    }
 }
 
 impl std::fmt::Display for TickDispatchError {
@@ -70,9 +95,7 @@ impl std::error::Error for TickDispatchError {}
 /// tick. `idle` is the set of `(network, chain)` pairs that the poller has
 /// previously delivered txs for but did **not** see in this tick's response —
 /// the processor uses this to evict their nonce-cache entries so the next
-/// batch for those chains re-reads the on-chain nonce from scratch. This
-/// prevents long-term cross-batch nonce desync while letting back-to-back
-/// batches reuse the in-memory counter.
+/// batch for those chains re-reads the Platform-corrected nonce from scratch.
 ///
 /// `ack` is a one-shot channel the consumer signals once it has fully
 /// finished processing this tick — including the round-trip to the platform
@@ -258,10 +281,9 @@ impl TransactionJob {
 
     async fn start_polling(&self) -> Result<(), TickDispatchError> {
         let mut no_transaction_count = 0;
-        // Set of (network, chain) pairs we've ever delivered a batch for. Used
-        // to compute the `idle` set: chains we've seen before but didn't see
-        // this tick. The cache for any chain in `idle` will be evicted on the
-        // consumer side.
+        // Preserve the existing nonce-cache lifecycle: once a chain is absent
+        // from an authoritative lookup, tell the processor to discard its
+        // cached counter. The next batch will seed it from GetAccountNonce.
         let mut seen_chains: HashSet<ChainKey> = HashSet::new();
 
         // Persistent cursor for `GetPendingTransactions`. We pass the
@@ -275,15 +297,14 @@ impl TransactionJob {
         // 25 on the consumer side, and therefore on the
         // `SignTransactions` mutation.
         //
-        // We reset the cursor to `None` whenever a poll does not
-        // successfully advance us (empty result, `NO_TRANSACTIONS_MSG`,
-        // or any other error). The cursor is only meaningful relative
-        // to a server-side scan that is still in progress; once we go
-        // quiet, we should rejoin the stream from the beginning on our
-        // next poll.
+        // Pages that make full or partial progress advance the cursor. A
+        // locally skipped page also advances when possible so a broken chain
+        // or poison row cannot starve healthy work on later pages. Only a
+        // failed platform submission resets the scan immediately.
         let mut cursor: Option<String> = None;
         let mut fetch_now = true; // Mandatory startup catch-up.
         let mut failure_count = 0u32;
+        let mut retry_after_scan = false;
         let mut pusher_aware_poll = self.pusher_status.poller();
 
         loop {
@@ -305,62 +326,85 @@ impl TransactionJob {
 
             match self.get_pending_transactions(cursor.clone()).await {
                 Ok((transaction_reqs, next_cursor)) => {
-                    // Treat an empty `Ok` (e.g. every item on the page
-                    // failed `TryFrom`) the same as `NO_TRANSACTIONS_MSG`:
-                    // back off instead of busy-looping on a broken-data
-                    // condition. We deliberately drop `next_cursor` here
-                    // even if non-null — if the page we got was unusable,
-                    // continuing to drain via that cursor would just
-                    // produce more unusable pages.
                     if transaction_reqs.is_empty() {
-                        cursor = None;
-                        if !seen_chains.is_empty() {
-                            self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
-                                .await?;
-                        }
-                        if fresh_lookup {
-                            self.trigger.finish_empty_lookup();
+                        if next_cursor.is_some() {
+                            // The raw page existed but every item failed
+                            // conversion. Keep draining so later healthy pages
+                            // are not hidden behind malformed data.
+                            cursor = next_cursor;
+                            retry_after_scan = true;
+                            fetch_now = true;
                         } else {
-                            fetch_now = self.trigger.finish_batch();
+                            cursor = None;
+                            if !seen_chains.is_empty() {
+                                self.send_tick_and_wait(
+                                    Vec::new(),
+                                    seen_chains.clone(),
+                                    "idle tick",
+                                )
+                                .await?;
+                            }
+                            if fresh_lookup {
+                                self.trigger.finish_empty_lookup();
+                            } else {
+                                fetch_now = self.trigger.finish_batch(true);
+                            }
+                            if retry_after_scan {
+                                retry_after_scan = false;
+                                let delay = crate::retry::jittered_exponential_delay(failure_count);
+                                failure_count = failure_count.saturating_add(1);
+                                if !fetch_now {
+                                    self.wait_for_retry_or_trigger(delay).await;
+                                }
+                                fetch_now = true;
+                            } else {
+                                failure_count = 0;
+                            }
                         }
-                        failure_count = 0;
                     } else {
-                        let request_ids = transaction_reqs
-                            .iter()
-                            .map(|request| request.request_id.clone())
-                            .collect::<Vec<_>>();
-                        self.trigger.set_active(request_ids);
-
                         let active: HashSet<ChainKey> = transaction_reqs
                             .iter()
-                            .map(|r| (r.network, r.chain))
+                            .map(|request| (request.network, request.chain))
                             .collect();
                         let idle: HashSet<ChainKey> =
                             seen_chains.difference(&active).copied().collect();
-                        seen_chains.extend(active.iter().copied());
+                        seen_chains.extend(active);
 
+                        let scan_complete = next_cursor.is_none();
                         let outcome = self
                             .send_tick_and_wait(transaction_reqs, idle, "transaction requests")
                             .await?;
-                        let deferred = self.trigger.finish_batch();
+                        let deferred = self.trigger.finish_batch(scan_complete);
 
-                        match outcome {
-                            BatchOutcome::Completed => {
-                                failure_count = 0;
-                                no_transaction_count = 0;
+                        match batch_step(outcome, next_cursor) {
+                            BatchStep::Continue {
+                                cursor: next_cursor,
+                                made_progress,
+                            } => {
+                                if made_progress {
+                                    failure_count = 0;
+                                    no_transaction_count = 0;
+                                }
                                 cursor = next_cursor;
+                                if made_progress && cursor.is_none() {
+                                    retry_after_scan = false;
+                                } else if !made_progress {
+                                    retry_after_scan = true;
+                                }
                                 fetch_now = cursor.is_some() || deferred;
                             }
-                            BatchOutcome::NeedsRefetch => {
+                            BatchStep::RetryFresh => {
                                 cursor = None;
-                                self.trigger.force();
+                                retry_after_scan = false;
                                 let delay = crate::retry::jittered_exponential_delay(failure_count);
                                 failure_count = failure_count.saturating_add(1);
                                 tracing::warn!(
-                                    "Transaction batch needs a fresh lookup; retrying in {:.1}s",
+                                    "Transaction batch made no progress; retrying a fresh lookup in {:.1}s",
                                     delay.as_secs_f64(),
                                 );
-                                sleep(delay).await;
+                                if !deferred {
+                                    self.wait_for_retry_or_trigger(delay).await;
+                                }
                                 fetch_now = true;
                             }
                         }
@@ -371,15 +415,13 @@ impl TransactionJob {
                     // is meaningless after we've lost our place in the
                     // server-side scan.
                     cursor = None;
+                    retry_after_scan = false;
                     if e.to_string() == NO_TRANSACTIONS_MSG {
                         if no_transaction_count % 10 == 0 {
                             tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
                         }
                         no_transaction_count += 1;
 
-                        // Empty poll: every chain we've ever seen is idle this
-                        // tick. Send an empty-batch tick so the consumer can
-                        // evict their cache entries.
                         if !seen_chains.is_empty() {
                             self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
                                 .await?;
@@ -387,23 +429,31 @@ impl TransactionJob {
                         if fresh_lookup {
                             self.trigger.finish_empty_lookup();
                         } else {
-                            fetch_now = self.trigger.finish_batch();
+                            fetch_now = self.trigger.finish_batch(true);
                         }
                         failure_count = 0;
                     } else {
                         tracing::error!("Error: {}", e);
                         self.trigger.finish_empty_lookup();
-                        self.trigger.force();
                         let delay = crate::retry::jittered_exponential_delay(failure_count);
                         failure_count = failure_count.saturating_add(1);
                         tracing::warn!(
                             "Retrying GetPendingTransactions in {:.1}s",
                             delay.as_secs_f64(),
                         );
-                        sleep(delay).await;
+                        self.wait_for_retry_or_trigger(delay).await;
                         fetch_now = true;
                     }
                 }
+            }
+        }
+    }
+
+    async fn wait_for_retry_or_trigger(&self, delay: std::time::Duration) {
+        tokio::select! {
+            _ = sleep(delay) => {}
+            _ = self.trigger.wait_until_ready() => {
+                tracing::info!("New transaction work interrupted the retry delay");
             }
         }
     }
@@ -520,8 +570,8 @@ pub struct TransactionProcessor {
     receiver: Receiver<ProcessorTick>,
     /// Persistent nonce cache. The slot for `(network, chain, signer)` holds
     /// the next nonce to use for that triple. Survives across batches so that
-    /// back-to-back batches stay in sync; entries are evicted when the poller
-    /// reports a chain has gone idle (see `ProcessorTick::idle`).
+    /// back-to-back cursor pages stay in sync; entries are evicted when an
+    /// authoritative lookup reports that their chain is idle.
     nonces: HashMap<NonceKey, u64>,
 }
 
@@ -599,24 +649,18 @@ impl TransactionProcessor {
         }
 
         // Seed (or refresh) the persistent nonce cache for every
-        // (network, chain, signer) triple in this batch. We fetch the
-        // on-chain nonce once per key per batch and rebase the cached
-        // slot to `max(slot, chain_nonce)`:
+        // (network, chain, signer) triple in this batch. GetAccountNonce is
+        // Platform-corrected: it considers both the chain nonce and recently
+        // submitted signed extrinsics. We fetch it once per key per batch and
+        // rebase the cached slot to `max(slot, platform_nonce)`:
         //
-        //   * If `slot >= chain_nonce`, the cache is preserved. This is
-        //     the common back-to-back-batch case: our previous batch
-        //     advanced the slot, the chain hasn't caught up to those
-        //     extrinsics yet, and the slot is still the right next
-        //     nonce to use.
+        //   * If `slot >= platform_nonce`, the cache is preserved. This is
+        //     the common cursor-pagination case: our previous page advanced
+        //     the slot and it remains the right next nonce to use.
         //
-        //   * If `slot < chain_nonce`, something moved the on-chain
-        //     nonce forward out-of-band (a different daemon, a manual
-        //     extrinsic, the platform using a different code path,
-        //     etc.). Without this rebase, the daemon would happily keep
-        //     signing with the stale cached value and produce stale-
-        //     nonce extrinsics that the chain rejects silently. Empty-
-        //     poll cache eviction does NOT cover this case, because the
-        //     chain is still active in our daemon's view.
+        //   * If `slot < platform_nonce`, the chain or Platform's submitted
+        //     transaction lookback has moved forward, so the cache is rebased
+        //     before any new extrinsics are signed.
         //
         let mut failed_keys: HashSet<NonceKey> = HashSet::new();
         // Per-batch dedup: we want exactly one chain fetch per key per
@@ -639,13 +683,13 @@ impl TransactionProcessor {
             )
             .await
             {
-                Ok(chain_nonce) => {
-                    let slot = nonces.entry(key).or_insert(chain_nonce);
-                    if *slot < chain_nonce {
+                Ok(platform_nonce) => {
+                    let slot = nonces.entry(key).or_insert(platform_nonce);
+                    if *slot < platform_nonce {
                         let was = *slot;
-                        *slot = chain_nonce;
+                        *slot = platform_nonce;
                         tracing::info!(
-                            "Detected out-of-band nonce advance for account 0x{} - Network: {:?} - Chain: {:?}; rebasing cache from {was} to {chain_nonce}",
+                            "Detected Platform-corrected nonce advance for account 0x{} - Network: {:?} - Chain: {:?}; rebasing cache from {was} to {platform_nonce}",
                             hex::encode(key.2),
                             request.network,
                             request.chain,
@@ -653,7 +697,7 @@ impl TransactionProcessor {
                     } else {
                         let cached = *slot;
                         tracing::debug!(
-                            "Refreshed nonce: cache={cached} chain={chain_nonce} for account 0x{} - Network: {:?} - Chain: {:?}",
+                            "Refreshed nonce: cache={cached} platform={platform_nonce} for account 0x{} - Network: {:?} - Chain: {:?}",
                             hex::encode(key.2),
                             request.network,
                             request.chain,
@@ -880,7 +924,7 @@ impl TransactionProcessor {
             tracing::debug!(
                 "SignTransactions: nothing to submit (all {request_count} request(s) in this batch were skipped)",
             );
-            return BatchOutcome::NeedsRefetch;
+            return BatchOutcome::Skipped;
         }
 
         let submitted_count = inputs.len();
@@ -892,12 +936,12 @@ impl TransactionProcessor {
         if let Err(e) = platform_client::sign_transactions(inputs).await {
             // Platform-side failure (after retries): every nonce we
             // advanced in this batch is uncommitted — those uuids are
-            // still pending on the platform side and the on-chain nonce
-            // hasn't moved. Evict the affected cache entries so the next
-            // batch re-fetches the real on-chain nonce and re-signs the
-            // same uuids at the correct values. Without this, the cache
-            // would drift forward by `committed_keys.len()` entries
-            // relative to chain reality, producing future-nonce
+            // still pending on the platform side and its corrected nonce has
+            // not incorporated this failed submission. Evict the affected
+            // cache entries so the next batch re-fetches GetAccountNonce and
+            // re-signs the same uuids at the correct values. Without this,
+            // the cache would drift forward by `committed_keys.len()` entries
+            // relative to Platform/chain reality, producing future-nonce
             // extrinsics on every subsequent batch and a stuck queue.
             let evicted = evict_nonce_keys(nonces, &committed_keys);
             let chains: HashSet<ChainKey> = committed_keys
@@ -905,12 +949,12 @@ impl TransactionProcessor {
                 .map(|(net, chain, _)| (*net, *chain))
                 .collect();
             tracing::error!(
-                "Platform SignTransactions failed; evicting nonce cache for affected chains so the next batch will re-fetch from chain. error={e} chains={chains:?} uuids={submitted_uuids:?} evicted={evicted}",
+                "Platform SignTransactions failed; evicting nonce cache for affected chains so the next batch will re-fetch GetAccountNonce. error={e} chains={chains:?} uuids={submitted_uuids:?} evicted={evicted}",
             );
-            BatchOutcome::NeedsRefetch
+            BatchOutcome::SubmissionFailed
         } else if submitted_count < request_count {
             // Some requests were skipped before submission and remain pending.
-            BatchOutcome::NeedsRefetch
+            BatchOutcome::PartialProgress
         } else {
             BatchOutcome::Completed
         }
@@ -929,10 +973,6 @@ impl TransactionProcessor {
         // prevents the producer from racing ahead and re-fetching uuids
         // that are still queued for signing.
         while let Some(ProcessorTick { batch, idle, ack }) = self.receiver.recv().await {
-            // Apply idle resets BEFORE processing the batch. By construction
-            // the poller never includes a chain in both `batch` and `idle` for
-            // the same tick, but applying resets first keeps semantics
-            // unambiguous if that invariant ever changes.
             if !idle.is_empty() {
                 let evicted = evict_idle_chains(&mut self.nonces, &idle);
                 if evicted > 0 {
@@ -950,10 +990,8 @@ impl TransactionProcessor {
                 Self::transaction_handler(self.keypair.clone(), &mut self.nonces, batch).await
             };
 
-            // Always signal the producer, even on an empty batch (idle
-            // ticks still need an ack to release the producer). Failure
-            // here means the producer has already gone away, which would
-            // mean the daemon is shutting down — nothing actionable.
+            // Always signal the producer, including for idle ticks. Failure
+            // here means the producer has already gone away.
             let _ = ack.send(outcome);
         }
     }
@@ -980,10 +1018,8 @@ fn derive_signer(keypair: &Keypair, external_id: Option<&str>) -> Keypair {
     }
 }
 
-/// Drop every nonce-cache entry whose `(network, chain)` is in `idle`. Used
-/// to flush stale counters when the poller reports a chain has gone quiet so
-/// the next batch for that chain re-reads the on-chain nonce. Returns the
-/// number of entries actually evicted.
+/// Drop every nonce-cache entry whose `(network, chain)` is idle. The next
+/// batch for that chain seeds its counter from GetAccountNonce.
 fn evict_idle_chains(nonces: &mut HashMap<NonceKey, u64>, idle: &HashSet<ChainKey>) -> usize {
     let before = nonces.len();
     nonces.retain(|(net, chain, _), _| !idle.contains(&(*net, *chain)));
@@ -996,9 +1032,9 @@ fn evict_idle_chains(nonces: &mut HashMap<NonceKey, u64>, idle: &HashSet<ChainKe
 /// is built and queued for submission, but those increments only reflect
 /// reality once the platform accepts the batch. If the platform-side
 /// mutation ultimately fails (after retries), the cached counters reflect
-/// uncommitted nonces and must be discarded so the next batch re-reads
-/// the on-chain nonce from scratch and re-signs the same uuids at the
-/// correct nonce values. Returns the number of entries actually evicted.
+/// uncommitted nonces and must be discarded so the next batch re-reads the
+/// Platform-corrected nonce and re-signs the same uuids at the correct values.
+/// Returns the number of entries actually evicted.
 fn evict_nonce_keys(nonces: &mut HashMap<NonceKey, u64>, keys: &HashSet<NonceKey>) -> usize {
     let before = nonces.len();
     nonces.retain(|k, _| !keys.contains(k));
@@ -1008,6 +1044,36 @@ fn evict_nonce_keys(nonces: &mut HashMap<NonceKey, u64>, keys: &HashSet<NonceKey
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_progress_keeps_the_cursor_and_continues_immediately() {
+        assert_eq!(
+            batch_step(BatchOutcome::PartialProgress, Some("page-2".to_string())),
+            BatchStep::Continue {
+                cursor: Some("page-2".to_string()),
+                made_progress: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_skipped_page_advances_when_more_pages_exist() {
+        assert_eq!(
+            batch_step(BatchOutcome::Skipped, Some("page-2".to_string())),
+            BatchStep::Continue {
+                cursor: Some("page-2".to_string()),
+                made_progress: false,
+            }
+        );
+    }
+
+    #[test]
+    fn submission_failure_restarts_from_a_fresh_cursor() {
+        assert_eq!(
+            batch_step(BatchOutcome::SubmissionFailed, Some("page-2".to_string())),
+            BatchStep::RetryFresh
+        );
+    }
 
     /// Within a single batch, a per-batch `HashMap<NonceKey, u64>` must:
     ///   * issue strictly consecutive nonces for repeat (network, chain, signer)
@@ -1090,34 +1156,30 @@ mod tests {
         assert_eq!(nonces[&key], 12);
     }
 
-    /// Cross-batch carry-over: when the chain has not yet caught up to
-    /// our previously-signed extrinsics, the cached slot must be
-    /// preserved across batches. This is the common case for back-to-
-    /// back batches against the same `(network, chain, signer)`: our
-    /// previous batch's extrinsics are still propagating / awaiting
-    /// inclusion, so the chain still reports the pre-batch nonce, but
-    /// we must keep using our advanced cache.
+    /// Cross-batch carry-over: when Platform's corrected nonce has not yet
+    /// caught up to our previously signed extrinsics, the cached slot must be
+    /// preserved across batches. This is the common case for back-to-back
+    /// pages against the same `(network, chain, signer)`.
     ///
-    /// Mirrors the `max(slot, chain_nonce)` rebase in
-    /// `transaction_handler`'s seed loop: when `slot >= chain_nonce`,
+    /// Mirrors the `max(slot, platform_nonce)` rebase in
+    /// `transaction_handler`'s seed loop: when `slot >= platform_nonce`,
     /// the slot is unchanged.
     #[test]
-    fn cache_carry_over_preserves_slot_when_chain_is_behind() {
+    fn cache_carry_over_preserves_slot_when_platform_nonce_is_behind() {
         let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
         let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
 
-        // End-of-batch-1 state: 25 txs signed starting at chain nonce
-        // 21, slot now holds 46 (= 21 + 25). The chain still reports 21
-        // because none of those extrinsics have been included yet.
+        // End-of-page-1 state: 25 txs signed starting at nonce 21, so the
+        // slot now holds 46. Platform's corrected value still reports 21.
         nonces.insert(key, 46);
-        let chain_nonce: u64 = 21;
+        let platform_nonce: u64 = 21;
 
         // Apply the same rebase rule as the production seed loop:
-        // `slot = max(slot, chain_nonce)`. When the chain is behind us
+        // `slot = max(slot, platform_nonce)`. When Platform is behind us,
         // the slot must remain at 46.
         let slot = nonces.get_mut(&key).unwrap();
-        if *slot < chain_nonce {
-            *slot = chain_nonce;
+        if *slot < platform_nonce {
+            *slot = platform_nonce;
         }
         assert_eq!(
             *slot, 46,
@@ -1129,35 +1191,29 @@ mod tests {
         assert_eq!(nonces[&key], 47);
     }
 
-    /// Out-of-band advance: when the on-chain nonce has moved past the
-    /// cached slot (because some other process — another daemon, a
-    /// manual extrinsic, etc. — used the same account), the cache must
-    /// be rebased to the chain's value before signing. Otherwise the
-    /// daemon would keep producing stale-nonce extrinsics that the
-    /// chain rejects silently. This is the bug the second reviewer
-    /// flagged.
+    /// Corrected advance: when Platform's nonce has moved past the cached slot
+    /// because either chain state or recently submitted extrinsics advanced,
+    /// the cache must be rebased before signing.
     ///
-    /// Mirrors the `max(slot, chain_nonce)` rebase in
-    /// `transaction_handler`'s seed loop: when `slot < chain_nonce`,
+    /// Mirrors the `max(slot, platform_nonce)` rebase in
+    /// `transaction_handler`'s seed loop: when `slot < platform_nonce`,
     /// the slot is bumped up.
     #[test]
-    fn cache_rebases_to_chain_when_chain_advances_out_of_band() {
+    fn cache_rebases_when_platform_corrected_nonce_advances() {
         let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
         let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
 
-        // Cache says next nonce is 30 (e.g. we last signed nonce 29).
+        // Cache says next nonce is 30, while Platform now reports 35.
         nonces.insert(key, 30);
-        // Meanwhile the chain has moved to 35 because something else
-        // signed nonces 30..35 with this account.
-        let chain_nonce: u64 = 35;
+        let platform_nonce: u64 = 35;
 
         let slot = nonces.get_mut(&key).unwrap();
-        if *slot < chain_nonce {
-            *slot = chain_nonce;
+        if *slot < platform_nonce {
+            *slot = platform_nonce;
         }
         assert_eq!(
             *slot, 35,
-            "slot must be rebased to chain when chain has advanced past the cache"
+            "slot must be rebased when Platform has advanced past the cache"
         );
 
         // The next signed tx must therefore use 35, not 30.
@@ -1165,9 +1221,9 @@ mod tests {
         assert_eq!(nonces[&key], 36);
     }
 
-    /// Reset-on-idle: when the poller reports a chain went idle, every cache
-    /// entry for that chain (across all signing keys) must be evicted, while
-    /// other chains' entries remain intact.
+    /// Reset-on-idle: when an authoritative lookup no longer returns a chain,
+    /// every cache entry for that chain must be evicted while other chains'
+    /// entries remain intact.
     #[test]
     fn evict_idle_chains_drops_only_matching_chains() {
         let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
@@ -1183,7 +1239,7 @@ mod tests {
         // One signer active on Canary Matrix.
         nonces.insert((Network::Canary, Chain::Matrix, alice), 3);
 
-        // Poller reports: Enjin Matrix went idle this tick.
+        // The latest authoritative lookup reported Enjin Matrix as idle.
         let idle: HashSet<ChainKey> = [(Network::Enjin, Chain::Matrix)].into_iter().collect();
         evict_idle_chains(&mut nonces, &idle);
 
@@ -1214,8 +1270,8 @@ mod tests {
     /// advanced during the failed batch must be evicted (and only those —
     /// any other keys, including different signers on the same chain,
     /// must remain intact). The next batch will then re-fetch the real
-    /// on-chain nonce for each evicted key and re-sign the same uuids at
-    /// the correct nonce values.
+    /// Platform-corrected nonce for each evicted key and re-sign the same
+    /// uuids at the correct nonce values.
     #[test]
     fn evict_nonce_keys_drops_only_matching_keys() {
         let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
@@ -1332,7 +1388,7 @@ mod tests {
         drop(receiver);
 
         let result = job
-            .send_tick_and_wait(Vec::new(), HashSet::new(), "test idle tick")
+            .send_tick_and_wait(Vec::new(), HashSet::new(), "test empty tick")
             .await;
 
         assert!(matches!(result, Err(TickDispatchError::ConsumerGone)));
@@ -1357,7 +1413,7 @@ mod tests {
         });
 
         let result = job
-            .send_tick_and_wait(Vec::new(), HashSet::new(), "test idle tick")
+            .send_tick_and_wait(Vec::new(), HashSet::new(), "test empty tick")
             .await;
         consumer.await.unwrap();
 

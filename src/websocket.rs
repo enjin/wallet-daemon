@@ -15,6 +15,7 @@ const DEFAULT_PUSHER_APP_KEY: &str = "8ab7ab8c519e8f59b635";
 const DEFAULT_PUSHER_CLUSTER: &str = "us2";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const PONG_TIMEOUT: Duration = Duration::from_secs(30);
+const MIN_STABLE_SUBSCRIPTION: Duration = Duration::from_secs(30);
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -32,17 +33,6 @@ struct PusherFrame {
 struct ConnectionEstablished {
     socket_id: String,
     activity_timeout: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct TransactionCreated {
-    uuid: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManagedWalletRequested {
-    #[serde(rename = "externalId")]
-    external_id: String,
 }
 
 #[derive(Debug)]
@@ -91,7 +81,6 @@ impl PusherConnection {
         loop {
             match self.connect_and_subscribe().await {
                 Ok((socket, activity_timeout, channel)) => {
-                    failures = 0;
                     self.status.set_connected(true);
                     tracing::info!(
                         "Pusher WebSocket subscribed successfully; using five-minute safety polling"
@@ -101,11 +90,15 @@ impl PusherConnection {
                     self.transaction_trigger.force();
                     self.wallet_trigger.force();
 
+                    let subscribed_at = Instant::now();
                     let listen_result = self.listen(socket, activity_timeout, &channel).await;
+                    let connected_for = subscribed_at.elapsed();
+                    failures = reconnect_backoff_attempt(failures, connected_for);
                     self.status.set_connected(false);
                     if let Err(error) = listen_result {
                         tracing::warn!(
-                            "Pusher WebSocket disconnected; enabling six-second fallback polling: {error}"
+                            "Pusher WebSocket disconnected after {:.1}s; enabling six-second fallback polling: {error}",
+                            connected_for.as_secs_f64(),
                         );
                     }
                 }
@@ -215,22 +208,8 @@ impl PusherConnection {
                             }
 
                             match frame.event.as_str() {
-                                "TransactionCreated" => {
-                                    match decode_data::<TransactionCreated>(frame.data) {
-                                        Ok(event) => self.transaction_trigger.record_event(event.uuid),
-                                        Err(error) => tracing::warn!(
-                                            "Ignoring malformed TransactionCreated event: {error}"
-                                        ),
-                                    }
-                                }
-                                "ManagedWalletRequested" => {
-                                    match decode_data::<ManagedWalletRequested>(frame.data) {
-                                        Ok(event) => self.wallet_trigger.record_event(event.external_id),
-                                        Err(error) => tracing::warn!(
-                                            "Ignoring malformed ManagedWalletRequested event: {error}"
-                                        ),
-                                    }
-                                }
+                                "TransactionCreated" => self.transaction_trigger.record_event(),
+                                "ManagedWalletRequested" => self.wallet_trigger.record_event(),
                                 "pusher:ping" => send_pusher_pong(&mut socket).await?,
                                 "pusher:pong" | "pusher_internal:subscription_succeeded" => {}
                                 "pusher:error" => return Err(pusher_error(frame.data)),
@@ -299,22 +278,35 @@ fn valid_component(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn reconnect_backoff_attempt(current_attempt: u32, connected_for: Duration) -> u32 {
+    if connected_for >= MIN_STABLE_SUBSCRIPTION {
+        0
+    } else {
+        current_attempt
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn decodes_json_encoded_pusher_payloads() {
-        let payload = Value::String(r#"{"uuid":"transaction-1"}"#.to_string());
-        let event = decode_data::<TransactionCreated>(payload).unwrap();
-        assert_eq!(event.uuid, "transaction-1");
+    fn decodes_json_encoded_pusher_protocol_payloads() {
+        let payload = Value::String(r#"{"socket_id":"1.2","activity_timeout":30}"#.to_string());
+        let established = decode_data::<ConnectionEstablished>(payload).unwrap();
+        assert_eq!(established.socket_id, "1.2");
+        assert_eq!(established.activity_timeout, 30);
     }
 
     #[test]
-    fn decodes_object_pusher_payloads() {
-        let payload = json!({"externalId": "wallet-1"});
-        let event = decode_data::<ManagedWalletRequested>(payload).unwrap();
-        assert_eq!(event.external_id, "wallet-1");
+    fn application_event_payload_is_not_required_for_notification() {
+        let frame: PusherFrame = serde_json::from_value(json!({
+            "event": "TransactionCreated",
+            "channel": "private-daemon",
+            "data": null,
+        }))
+        .unwrap();
+        assert_eq!(frame.event, "TransactionCreated");
     }
 
     #[test]
@@ -323,5 +315,18 @@ mod tests {
         assert!(valid_component("us2"));
         assert!(!valid_component(""));
         assert!(!valid_component("us2/path"));
+    }
+
+    #[test]
+    fn short_lived_subscriptions_preserve_reconnect_escalation() {
+        assert_eq!(
+            reconnect_backoff_attempt(5, MIN_STABLE_SUBSCRIPTION - Duration::from_millis(1)),
+            5
+        );
+    }
+
+    #[test]
+    fn stable_subscriptions_reset_reconnect_escalation() {
+        assert_eq!(reconnect_backoff_attempt(5, MIN_STABLE_SUBSCRIPTION), 0);
     }
 }

@@ -9,11 +9,17 @@ Metadata:
         Parameters:
           - PlatformApiToken
           - WalletDaemonImage
+          - ExistingWalletSeedFileSystemId
+          - ExistingKeyPassSecretArn
     ParameterLabels:
       PlatformApiToken:
         default: "Enjin Platform API token"
       WalletDaemonImage:
         default: "Wallet daemon image"
+      ExistingWalletSeedFileSystemId:
+        default: "Existing wallet seed EFS file system (recovery only)"
+      ExistingKeyPassSecretArn:
+        default: "Existing KEY_PASS secret ARN (recovery only)"
 
 Parameters:
   PlatformApiToken:
@@ -26,6 +32,42 @@ Parameters:
     Default: "enjin/wallet-daemon:v3.0.10"
     MinLength: 1
     Description: "Versioned Docker image to run. Do not use latest for production deployments."
+  ExistingWalletSeedFileSystemId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^fs-[0-9a-fA-F]+$"
+    Description: "For stack recovery, provide the retained WalletSeedFileSystemId output from the previous stack together with ExistingKeyPassSecretArn. Leave both empty for a new wallet."
+  ExistingKeyPassSecretArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$"
+    Description: "For stack recovery, provide the retained KeyPassSecretArn output from the previous stack together with ExistingWalletSeedFileSystemId. Leave both empty for a new wallet."
+
+Rules:
+  ExistingWalletResourcesMustBeProvidedTogether:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::And:
+                - Fn::Equals:
+                    - Ref: ExistingWalletSeedFileSystemId
+                    - ""
+                - Fn::Equals:
+                    - Ref: ExistingKeyPassSecretArn
+                    - ""
+            - Fn::And:
+                - Fn::Not:
+                    - Fn::Equals:
+                        - Ref: ExistingWalletSeedFileSystemId
+                        - ""
+                - Fn::Not:
+                    - Fn::Equals:
+                        - Ref: ExistingKeyPassSecretArn
+                        - ""
+        AssertDescription: "ExistingWalletSeedFileSystemId and ExistingKeyPassSecretArn must either both be supplied or both be empty."
+
+Conditions:
+  CreateWalletResources: !Equals [!Ref ExistingWalletSeedFileSystemId, ""]
 
 Resources:
   Vpc:
@@ -147,6 +189,7 @@ Resources:
 
   KeyPassSecret:
     Type: AWS::SecretsManager::Secret
+    Condition: CreateWalletResources
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -171,6 +214,7 @@ Resources:
 
   WalletSeedFileSystem:
     Type: AWS::EFS::FileSystem
+    Condition: CreateWalletResources
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -198,7 +242,10 @@ Resources:
   WalletSeedAccessPoint:
     Type: AWS::EFS::AccessPoint
     Properties:
-      FileSystemId: !Ref WalletSeedFileSystem
+      FileSystemId: !If
+        - CreateWalletResources
+        - !Ref WalletSeedFileSystem
+        - !Ref ExistingWalletSeedFileSystemId
       PosixUser:
         Uid: "1000"
         Gid: "1000"
@@ -212,7 +259,10 @@ Resources:
   EfsMountTargetA:
     Type: AWS::EFS::MountTarget
     Properties:
-      FileSystemId: !Ref WalletSeedFileSystem
+      FileSystemId: !If
+        - CreateWalletResources
+        - !Ref WalletSeedFileSystem
+        - !Ref ExistingWalletSeedFileSystemId
       SubnetId: !Ref PublicSubnetA
       SecurityGroups:
         - !Ref EfsSecurityGroup
@@ -220,7 +270,10 @@ Resources:
   EfsMountTargetB:
     Type: AWS::EFS::MountTarget
     Properties:
-      FileSystemId: !Ref WalletSeedFileSystem
+      FileSystemId: !If
+        - CreateWalletResources
+        - !Ref WalletSeedFileSystem
+        - !Ref ExistingWalletSeedFileSystemId
       SubnetId: !Ref PublicSubnetB
       SecurityGroups:
         - !Ref EfsSecurityGroup
@@ -260,7 +313,10 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Ref KeyPassSecret
+                  - !If
+                    - CreateWalletResources
+                    - !Ref KeyPassSecret
+                    - !Ref ExistingKeyPassSecretArn
                   - !Ref PlatformKeySecret
 
   TaskRole:
@@ -282,7 +338,12 @@ Resources:
                 Action:
                   - elasticfilesystem:ClientMount
                   - elasticfilesystem:ClientWrite
-                Resource: !Sub "arn:${AWS::Partition}:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${WalletSeedFileSystem}"
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${FileSystemId}"
+                  - FileSystemId: !If
+                      - CreateWalletResources
+                      - !Ref WalletSeedFileSystem
+                      - !Ref ExistingWalletSeedFileSystemId
                 Condition:
                   Bool:
                     elasticfilesystem:AccessedViaMountTarget: "true"
@@ -306,7 +367,10 @@ Resources:
       Volumes:
         - Name: wallet-seed
           EFSVolumeConfiguration:
-            FilesystemId: !Ref WalletSeedFileSystem
+            FilesystemId: !If
+              - CreateWalletResources
+              - !Ref WalletSeedFileSystem
+              - !Ref ExistingWalletSeedFileSystemId
             TransitEncryption: ENABLED
             AuthorizationConfig:
               AccessPointId: !Ref WalletSeedAccessPoint
@@ -322,7 +386,10 @@ Resources:
               Value: /wallet/store
           Secrets:
             - Name: KEY_PASS
-              ValueFrom: !Ref KeyPassSecret
+              ValueFrom: !If
+                - CreateWalletResources
+                - !Ref KeyPassSecret
+                - !Ref ExistingKeyPassSecretArn
             - Name: PLATFORM_KEY
               ValueFrom: !Ref PlatformKeySecret
           MountPoints:
@@ -383,9 +450,16 @@ Outputs:
     Description: "ECS service running exactly one wallet daemon task."
     Value: !GetAtt Service.Name
 
+  PlatformApiTokenRestartCommand:
+    Description: "Run this after changing PlatformApiToken so ECS replaces the running task and reads the new secret value."
+    Value: !Sub "aws ecs update-service --region ${AWS::Region} --cluster ${Cluster} --service ${Service.Name} --force-new-deployment"
+
   WalletSeedFileSystemId:
     Description: "Retained encrypted EFS file system containing wallet.seed."
-    Value: !Ref WalletSeedFileSystem
+    Value: !If
+      - CreateWalletResources
+      - !Ref WalletSeedFileSystem
+      - !Ref ExistingWalletSeedFileSystemId
 
   WalletSeedAccessPointId:
     Description: "EFS access point mounted by the wallet daemon task."
@@ -393,7 +467,10 @@ Outputs:
 
   KeyPassSecretArn:
     Description: "Retained Secrets Manager secret containing KEY_PASS."
-    Value: !Ref KeyPassSecret
+    Value: !If
+      - CreateWalletResources
+      - !Ref KeyPassSecret
+      - !Ref ExistingKeyPassSecretArn
 
   PlatformKeySecretArn:
     Description: "Retained Secrets Manager secret containing PLATFORM_KEY."

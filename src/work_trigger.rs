@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::{Notify, watch};
@@ -91,14 +90,17 @@ fn poll_interval(pusher_connected: bool) -> Duration {
 
 #[derive(Debug, Default)]
 struct TriggerState {
-    /// Event identifiers received since the current fresh lookup began.
-    pending_ids: HashSet<String>,
-    /// Identifiers in the batch currently being processed. Events for these
-    /// identifiers are duplicates and must not schedule a follow-up lookup.
-    active_ids: HashSet<String>,
+    /// Monotonically identifies the latest notification observed. A fresh
+    /// lookup captures this generation so notifications received while it is
+    /// in flight can schedule a follow-up without retaining event payloads.
+    event_generation: u64,
+    lookup_generation: Option<u64>,
+    /// Number of notifications waiting to be covered by a fresh lookup. The
+    /// count is capped because only the 25-delivery fast path is significant.
+    pending_event_count: usize,
     /// Startup, reconnect, or another non-event reason to perform a lookup.
     forced: bool,
-    /// Trailing-edge debounce deadline for `pending_ids` while idle.
+    /// Trailing-edge debounce deadline for pending notifications while idle.
     debounce_deadline: Option<Instant>,
 }
 
@@ -134,25 +136,18 @@ impl WorkTrigger {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Record one unique platform event. Events matching the active batch are
-    /// already prepared and therefore do not create deferred work.
-    pub(crate) fn record_event(&self, id: String) {
-        let inserted = {
+    /// Record one platform notification without retaining its payload.
+    pub(crate) fn record_event(&self) {
+        {
             let mut state = self.state();
-            if state.active_ids.contains(&id) {
-                false
-            } else {
-                let inserted = state.pending_ids.insert(id);
-                if inserted {
-                    state.debounce_deadline = Some(Instant::now() + EVENT_DEBOUNCE);
-                }
-                inserted
-            }
-        };
-
-        if inserted {
-            self.inner.notify.notify_one();
+            state.event_generation = state.event_generation.wrapping_add(1);
+            state.pending_event_count = state
+                .pending_event_count
+                .saturating_add(1)
+                .min(EVENT_TRIGGER_LIMIT);
+            state.debounce_deadline = Some(Instant::now() + EVENT_DEBOUNCE);
         }
+        self.inner.notify.notify_one();
     }
 
     /// Force a lookup for startup or after a successful WebSocket reconnect.
@@ -161,7 +156,7 @@ impl WorkTrigger {
         self.inner.notify.notify_one();
     }
 
-    /// Wait for a force, 25 unique events, or the trailing debounce deadline.
+    /// Wait for a force, 25 event deliveries, or the trailing debounce deadline.
     pub(crate) async fn wait_until_ready(&self) {
         loop {
             // Register before checking state so a notification racing with the
@@ -170,7 +165,7 @@ impl WorkTrigger {
             let deadline = {
                 let state = self.state();
                 if state.forced
-                    || state.pending_ids.len() >= EVENT_TRIGGER_LIMIT
+                    || state.pending_event_count >= EVENT_TRIGGER_LIMIT
                     || state
                         .debounce_deadline
                         .is_some_and(|deadline| deadline <= Instant::now())
@@ -192,42 +187,36 @@ impl WorkTrigger {
         }
     }
 
-    /// Start a lookup from `cursor: None`. Events already pending are covered
-    /// by this authoritative scan. Events arriving after this call remain in
-    /// `pending_ids` and can force a post-processing scan.
+    /// Start a lookup from `cursor: None`. Notifications already pending are
+    /// covered by this authoritative scan. A generation change after this
+    /// call forces another scan after the current work finishes.
     pub(crate) fn begin_fresh_lookup(&self) {
         let mut state = self.state();
-        state.pending_ids.clear();
+        state.lookup_generation = Some(state.event_generation);
+        state.pending_event_count = 0;
         state.forced = false;
         state.debounce_deadline = None;
     }
 
-    /// Mark the fetched page as prepared. This atomically removes matching
-    /// events that arrived while the GraphQL request was in flight.
-    pub(crate) fn set_active<I>(&self, ids: I)
-    where
-        I: IntoIterator<Item = String>,
-    {
+    /// Finish a non-empty batch and report whether new work arrived while the
+    /// cursor scan was being retrieved or processed.
+    pub(crate) fn finish_batch(&self, scan_complete: bool) -> bool {
         let mut state = self.state();
-        state.active_ids.clear();
-        state.active_ids.extend(ids);
-        let active_ids = state.active_ids.clone();
-        state.pending_ids.retain(|id| !active_ids.contains(id));
+        let deferred = state.forced
+            || state.pending_event_count > 0
+            || state
+                .lookup_generation
+                .is_some_and(|generation| generation != state.event_generation);
+        if scan_complete {
+            state.lookup_generation = None;
+        }
+        deferred
     }
 
-    /// Finish a non-empty batch and report whether new work arrived while it
-    /// was being retrieved or processed.
-    pub(crate) fn finish_batch(&self) -> bool {
-        let mut state = self.state();
-        state.active_ids.clear();
-        state.forced || !state.pending_ids.is_empty()
-    }
-
-    /// Finish an empty fresh lookup. Forces or events that arrived after the
-    /// lookup began are retained: a reconnect catch-up must not be consumed by
-    /// a request that may have taken its snapshot before the reconnect.
+    /// Finish an empty fresh lookup. Forces and notifications that arrived
+    /// after it began remain pending for the next lookup.
     pub(crate) fn finish_empty_lookup(&self) {
-        self.state().active_ids.clear();
+        self.state().lookup_generation = None;
     }
 }
 
@@ -322,7 +311,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn one_event_uses_a_trailing_500_millisecond_debounce() {
         let trigger = WorkTrigger::new();
-        trigger.record_event("one".to_string());
+        trigger.record_event();
 
         let waiting = tokio::spawn({
             let trigger = trigger.clone();
@@ -332,7 +321,7 @@ mod tests {
         assert!(!waiting.is_finished());
 
         tokio::time::advance(Duration::from_millis(400)).await;
-        trigger.record_event("two".to_string());
+        trigger.record_event();
         tokio::time::advance(Duration::from_millis(499)).await;
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
@@ -342,10 +331,10 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn twenty_five_unique_events_bypass_the_debounce() {
+    async fn twenty_five_event_deliveries_bypass_the_debounce() {
         let trigger = WorkTrigger::new();
-        for n in 0..EVENT_TRIGGER_LIMIT - 1 {
-            trigger.record_event(format!("event-{n}"));
+        for _ in 0..EVENT_TRIGGER_LIMIT - 1 {
+            trigger.record_event();
         }
 
         let waiting = tokio::spawn({
@@ -355,37 +344,74 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
 
-        // A duplicate does not count toward the threshold.
-        trigger.record_event("event-0".to_string());
-        tokio::task::yield_now().await;
-        assert!(!waiting.is_finished());
-
-        trigger.record_event("event-24".to_string());
+        trigger.record_event();
         waiting.await.unwrap();
     }
 
     #[test]
-    fn prepared_and_in_flight_events_do_not_force_a_follow_up() {
+    fn events_known_when_lookup_begins_are_covered_by_that_lookup() {
+        let trigger = WorkTrigger::new();
+        trigger.record_event();
+
+        trigger.begin_fresh_lookup();
+        trigger.finish_empty_lookup();
+        let state = trigger.state();
+        assert_eq!(state.event_generation, 1);
+        assert_eq!(state.pending_event_count, 0);
+        assert!(state.lookup_generation.is_none());
+    }
+
+    #[test]
+    fn event_counter_is_capped_at_the_trigger_limit() {
+        let trigger = WorkTrigger::new();
+        for _ in 0..EVENT_TRIGGER_LIMIT * 4 {
+            trigger.record_event();
+        }
+
+        let state = trigger.state();
+        assert_eq!(state.pending_event_count, EVENT_TRIGGER_LIMIT);
+        assert_eq!(state.event_generation, (EVENT_TRIGGER_LIMIT * 4) as u64);
+    }
+
+    #[test]
+    fn no_event_during_a_lookup_requires_no_follow_up() {
         let trigger = WorkTrigger::new();
         trigger.begin_fresh_lookup();
 
-        // This event races with the GraphQL response, then is found in it.
-        trigger.record_event("prepared".to_string());
-        trigger.set_active(["prepared".to_string()]);
-        // A second delivery while processing is also a duplicate.
-        trigger.record_event("prepared".to_string());
-
-        assert!(!trigger.finish_batch());
+        assert!(!trigger.finish_batch(true));
     }
 
     #[test]
     fn a_new_event_during_processing_forces_a_follow_up() {
         let trigger = WorkTrigger::new();
         trigger.begin_fresh_lookup();
-        trigger.set_active(["prepared".to_string()]);
-        trigger.record_event("new".to_string());
+        trigger.record_event();
 
-        assert!(trigger.finish_batch());
+        assert!(trigger.finish_batch(true));
+    }
+
+    #[test]
+    fn an_event_during_a_cursor_scan_survives_until_scan_completion() {
+        let trigger = WorkTrigger::new();
+        trigger.begin_fresh_lookup();
+        trigger.record_event();
+
+        assert!(trigger.finish_batch(false));
+        assert!(trigger.state().lookup_generation.is_some());
+        assert!(trigger.finish_batch(true));
+        assert!(trigger.state().lookup_generation.is_none());
+    }
+
+    #[test]
+    fn an_event_racing_with_an_empty_lookup_remains_pending() {
+        let trigger = WorkTrigger::new();
+        trigger.begin_fresh_lookup();
+        trigger.record_event();
+        trigger.finish_empty_lookup();
+
+        let state = trigger.state();
+        assert_eq!(state.pending_event_count, 1);
+        assert!(state.lookup_generation.is_none());
     }
 
     #[test]
@@ -396,13 +422,14 @@ mod tests {
 
         // Cursor continuation ended without another page. The force must
         // still restart the scan from cursor None.
-        assert!(trigger.finish_batch());
+        assert!(trigger.finish_batch(true));
 
         trigger.begin_fresh_lookup();
         trigger.finish_empty_lookup();
         let state = trigger.state();
         assert!(!state.forced);
-        assert!(state.pending_ids.is_empty());
+        assert_eq!(state.pending_event_count, 0);
+        assert!(state.lookup_generation.is_none());
     }
 
     #[test]

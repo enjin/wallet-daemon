@@ -33,7 +33,7 @@ impl TryFrom<get_pending_managed_wallet_creations::GetPendingManagedWalletCreati
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BatchOutcome {
     Completed,
-    NeedsRefetch,
+    SubmissionFailed,
 }
 
 struct WalletBatch {
@@ -80,6 +80,7 @@ impl DeriveWalletJob {
         let mut cursor: Option<String> = None;
         let mut fetch_now = true; // Mandatory startup catch-up.
         let mut failure_count = 0u32;
+        let mut restart_after_scan = false;
         let mut pusher_aware_poll = self.pusher_status.poller();
 
         loop {
@@ -97,50 +98,79 @@ impl DeriveWalletJob {
             fetch_now = false;
 
             match self.get_pending_wallets(cursor.clone()).await {
-                Ok((requests, _next_cursor)) if requests.is_empty() => {
-                    cursor = None;
-                    if fresh_lookup {
-                        self.trigger.finish_empty_lookup();
+                Ok((requests, next_cursor)) if requests.is_empty() => {
+                    if next_cursor.is_some() {
+                        // Keep draining when a raw page contained only
+                        // malformed rows so later valid wallets are not
+                        // starved behind it.
+                        cursor = next_cursor;
+                        restart_after_scan = true;
+                        fetch_now = true;
                     } else {
-                        fetch_now = self.trigger.finish_batch();
+                        cursor = None;
+                        if fresh_lookup {
+                            self.trigger.finish_empty_lookup();
+                        } else {
+                            fetch_now = self.trigger.finish_batch(true);
+                        }
+                        if restart_after_scan {
+                            restart_after_scan = false;
+                            let delay = crate::retry::jittered_exponential_delay(failure_count);
+                            failure_count = failure_count.saturating_add(1);
+                            if !fetch_now {
+                                self.wait_for_retry_or_trigger(delay).await;
+                            }
+                            fetch_now = true;
+                        } else {
+                            failure_count = 0;
+                        }
+                        tracing::info!("No pending managed wallets");
                     }
-                    failure_count = 0;
-                    tracing::info!("No pending managed wallets");
                 }
                 Ok((requests, next_cursor)) => {
-                    let external_ids = requests
-                        .iter()
-                        .map(|request| request.external_id.clone())
-                        .collect::<Vec<_>>();
-                    self.trigger.set_active(external_ids);
-
+                    let scan_complete = next_cursor.is_none();
                     let outcome = self.send_batch_and_wait(requests).await?;
-                    let deferred = self.trigger.finish_batch();
+                    let deferred = self.trigger.finish_batch(scan_complete);
 
                     match outcome {
                         BatchOutcome::Completed => {
-                            failure_count = 0;
                             cursor = next_cursor;
-                            fetch_now = cursor.is_some() || deferred;
+                            if cursor.is_none() && restart_after_scan {
+                                restart_after_scan = false;
+                                let delay = crate::retry::jittered_exponential_delay(failure_count);
+                                failure_count = failure_count.saturating_add(1);
+                                if !deferred {
+                                    self.wait_for_retry_or_trigger(delay).await;
+                                }
+                                fetch_now = true;
+                            } else {
+                                failure_count = 0;
+                                fetch_now = cursor.is_some() || deferred;
+                            }
                         }
-                        BatchOutcome::NeedsRefetch => {
-                            cursor = None;
-                            self.trigger.force();
+                        BatchOutcome::SubmissionFailed => {
+                            // Continue the current scan after the delay when
+                            // possible. A poison row in one page must not hide
+                            // valid wallets on every later page.
+                            cursor = next_cursor;
+                            restart_after_scan = cursor.is_some();
                             let delay = crate::retry::jittered_exponential_delay(failure_count);
                             failure_count = failure_count.saturating_add(1);
                             tracing::warn!(
-                                "Managed-wallet batch needs a fresh lookup; retrying in {:.1}s",
+                                "Managed-wallet batch submission failed; continuing lookup in {:.1}s",
                                 delay.as_secs_f64(),
                             );
-                            sleep(delay).await;
+                            if !deferred {
+                                self.wait_for_retry_or_trigger(delay).await;
+                            }
                             fetch_now = true;
                         }
                     }
                 }
                 Err(error) => {
                     cursor = None;
+                    restart_after_scan = false;
                     self.trigger.finish_empty_lookup();
-                    self.trigger.force();
                     let delay = crate::retry::jittered_exponential_delay(failure_count);
                     failure_count = failure_count.saturating_add(1);
                     tracing::error!("GetPendingManagedWalletCreations failed: {error}");
@@ -148,9 +178,18 @@ impl DeriveWalletJob {
                         "Retrying managed-wallet lookup in {:.1}s",
                         delay.as_secs_f64(),
                     );
-                    sleep(delay).await;
+                    self.wait_for_retry_or_trigger(delay).await;
                     fetch_now = true;
                 }
+            }
+        }
+    }
+
+    async fn wait_for_retry_or_trigger(&self, delay: std::time::Duration) {
+        tokio::select! {
+            _ = sleep(delay) => {}
+            _ = self.trigger.wait_until_ready() => {
+                tracing::info!("New managed-wallet work interrupted the retry delay");
             }
         }
     }
@@ -243,7 +282,7 @@ impl DeriveWalletProcessor {
             Ok(()) => BatchOutcome::Completed,
             Err(error) => {
                 tracing::error!("PopulateManagedWallets failed: {error}");
-                BatchOutcome::NeedsRefetch
+                BatchOutcome::SubmissionFailed
             }
         }
     }
