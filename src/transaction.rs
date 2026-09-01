@@ -60,22 +60,68 @@ enum BatchStep {
     Continue {
         cursor: Option<String>,
         made_progress: bool,
+        requires_fresh_retry: bool,
     },
     RetryFresh,
 }
 
 fn batch_step(outcome: BatchOutcome, next_cursor: Option<String>) -> BatchStep {
     match outcome {
-        BatchOutcome::Completed | BatchOutcome::PartialProgress => BatchStep::Continue {
+        BatchOutcome::Completed => BatchStep::Continue {
             cursor: next_cursor,
             made_progress: true,
+            requires_fresh_retry: false,
+        },
+        BatchOutcome::PartialProgress => BatchStep::Continue {
+            cursor: next_cursor,
+            made_progress: true,
+            requires_fresh_retry: true,
         },
         BatchOutcome::Skipped if next_cursor.is_some() => BatchStep::Continue {
             cursor: next_cursor,
             made_progress: false,
+            requires_fresh_retry: true,
         },
         BatchOutcome::Skipped | BatchOutcome::SubmissionFailed => BatchStep::RetryFresh,
     }
+}
+
+/// Whether any page in the current cursor scan left work pending. Once set,
+/// this remains set until scan completion so a later successful page cannot
+/// hide an earlier partial or skipped page.
+#[derive(Debug, Default)]
+struct ScanRetryState {
+    required: bool,
+}
+
+impl ScanRetryState {
+    fn require(&mut self) {
+        self.required = true;
+    }
+
+    fn take(&mut self) -> bool {
+        std::mem::take(&mut self.required)
+    }
+
+    fn clear(&mut self) {
+        self.required = false;
+    }
+}
+
+/// Complete one authoritative cursor scan. Nonce-cache entries are only
+/// considered idle when their chain was present in the previous completed
+/// scan but absent from this completed scan; individual cursor pages are not
+/// authoritative on their own.
+fn complete_chain_scan(
+    previous_scan_chains: &mut HashSet<ChainKey>,
+    current_scan_chains: &mut HashSet<ChainKey>,
+) -> HashSet<ChainKey> {
+    let idle = previous_scan_chains
+        .difference(current_scan_chains)
+        .copied()
+        .collect();
+    *previous_scan_chains = std::mem::take(current_scan_chains);
+    idle
 }
 
 impl std::fmt::Display for TickDispatchError {
@@ -92,10 +138,10 @@ impl std::error::Error for TickDispatchError {}
 /// Message sent from the poller to the processor on every poll tick.
 ///
 /// `batch` is the (possibly empty) set of transaction requests pulled this
-/// tick. `idle` is the set of `(network, chain)` pairs that the poller has
-/// previously delivered txs for but did **not** see in this tick's response —
-/// the processor uses this to evict their nonce-cache entries so the next
-/// batch for those chains re-reads the Platform-corrected nonce from scratch.
+/// tick. `idle` is the set of `(network, chain)` pairs that were present in
+/// the previous completed cursor scan but absent from the current completed
+/// scan. The processor uses this to evict their nonce-cache entries so the
+/// next batch for those chains re-reads the Platform-corrected nonce.
 ///
 /// `ack` is a one-shot channel the consumer signals once it has fully
 /// finished processing this tick — including the round-trip to the platform
@@ -281,10 +327,11 @@ impl TransactionJob {
 
     async fn start_polling(&self) -> Result<(), TickDispatchError> {
         let mut no_transaction_count = 0;
-        // Preserve the existing nonce-cache lifecycle: once a chain is absent
-        // from an authoritative lookup, tell the processor to discard its
-        // cached counter. The next batch will seed it from GetAccountNonce.
-        let mut seen_chains: HashSet<ChainKey> = HashSet::new();
+        // Individual cursor pages are not authoritative: the same chain can
+        // disappear on page 2 and return on page 3. Accumulate chains across
+        // the full scan and only evict chains absent from the completed scan.
+        let mut previous_scan_chains: HashSet<ChainKey> = HashSet::new();
+        let mut current_scan_chains: HashSet<ChainKey> = HashSet::new();
 
         // Persistent cursor for `GetPendingTransactions`. We pass the
         // cursor we received on the previous successful poll back to the
@@ -304,7 +351,7 @@ impl TransactionJob {
         let mut cursor: Option<String> = None;
         let mut fetch_now = true; // Mandatory startup catch-up.
         let mut failure_count = 0u32;
-        let mut retry_after_scan = false;
+        let mut scan_retry = ScanRetryState::default();
         let mut pusher_aware_poll = self.pusher_status.poller();
 
         loop {
@@ -320,10 +367,9 @@ impl TransactionJob {
             // received during the scan so they can force a restart at the end.
             let fresh_lookup = cursor.is_none();
             if fresh_lookup {
+                current_scan_chains.clear();
                 self.trigger.begin_fresh_lookup();
             }
-            fetch_now = false;
-
             match self.get_pending_transactions(cursor.clone()).await {
                 Ok((transaction_reqs, next_cursor)) => {
                     if transaction_reqs.is_empty() {
@@ -332,45 +378,41 @@ impl TransactionJob {
                             // conversion. Keep draining so later healthy pages
                             // are not hidden behind malformed data.
                             cursor = next_cursor;
-                            retry_after_scan = true;
+                            scan_retry.require();
                             fetch_now = true;
                         } else {
                             cursor = None;
-                            if !seen_chains.is_empty() {
-                                self.send_tick_and_wait(
-                                    Vec::new(),
-                                    seen_chains.clone(),
-                                    "idle tick",
-                                )
-                                .await?;
+                            let idle = complete_chain_scan(
+                                &mut previous_scan_chains,
+                                &mut current_scan_chains,
+                            );
+                            if !idle.is_empty() {
+                                self.send_tick_and_wait(Vec::new(), idle, "idle tick")
+                                    .await?;
                             }
-                            if fresh_lookup {
+                            let deferred = if fresh_lookup {
                                 self.trigger.finish_empty_lookup();
+                                false
                             } else {
-                                fetch_now = self.trigger.finish_batch(true);
-                            }
-                            if retry_after_scan {
-                                retry_after_scan = false;
-                                let delay = crate::retry::jittered_exponential_delay(failure_count);
-                                failure_count = failure_count.saturating_add(1);
-                                if !fetch_now {
-                                    self.wait_for_retry_or_trigger(delay).await;
-                                }
-                                fetch_now = true;
-                            } else {
-                                failure_count = 0;
-                            }
+                                self.trigger.finish_batch(true)
+                            };
+                            fetch_now = self
+                                .finish_scan_retry(&mut scan_retry, deferred, &mut failure_count)
+                                .await;
                         }
                     } else {
                         let active: HashSet<ChainKey> = transaction_reqs
                             .iter()
                             .map(|request| (request.network, request.chain))
                             .collect();
-                        let idle: HashSet<ChainKey> =
-                            seen_chains.difference(&active).copied().collect();
-                        seen_chains.extend(active);
+                        current_scan_chains.extend(active);
 
                         let scan_complete = next_cursor.is_none();
+                        let idle = if scan_complete {
+                            complete_chain_scan(&mut previous_scan_chains, &mut current_scan_chains)
+                        } else {
+                            HashSet::new()
+                        };
                         let outcome = self
                             .send_tick_and_wait(transaction_reqs, idle, "transaction requests")
                             .await?;
@@ -380,22 +422,32 @@ impl TransactionJob {
                             BatchStep::Continue {
                                 cursor: next_cursor,
                                 made_progress,
+                                requires_fresh_retry,
                             } => {
                                 if made_progress {
                                     failure_count = 0;
                                     no_transaction_count = 0;
                                 }
-                                cursor = next_cursor;
-                                if made_progress && cursor.is_none() {
-                                    retry_after_scan = false;
-                                } else if !made_progress {
-                                    retry_after_scan = true;
+                                if requires_fresh_retry {
+                                    scan_retry.require();
                                 }
-                                fetch_now = cursor.is_some() || deferred;
+                                cursor = next_cursor;
+                                if cursor.is_none() {
+                                    fetch_now = self
+                                        .finish_scan_retry(
+                                            &mut scan_retry,
+                                            deferred,
+                                            &mut failure_count,
+                                        )
+                                        .await;
+                                } else {
+                                    fetch_now = true;
+                                }
                             }
                             BatchStep::RetryFresh => {
                                 cursor = None;
-                                retry_after_scan = false;
+                                current_scan_chains.clear();
+                                scan_retry.clear();
                                 let delay = crate::retry::jittered_exponential_delay(failure_count);
                                 failure_count = failure_count.saturating_add(1);
                                 tracing::warn!(
@@ -415,24 +467,32 @@ impl TransactionJob {
                     // is meaningless after we've lost our place in the
                     // server-side scan.
                     cursor = None;
-                    retry_after_scan = false;
                     if e.to_string() == NO_TRANSACTIONS_MSG {
                         if no_transaction_count % 10 == 0 {
                             tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
                         }
                         no_transaction_count += 1;
 
-                        if !seen_chains.is_empty() {
-                            self.send_tick_and_wait(Vec::new(), seen_chains.clone(), "idle tick")
+                        let idle = complete_chain_scan(
+                            &mut previous_scan_chains,
+                            &mut current_scan_chains,
+                        );
+                        if !idle.is_empty() {
+                            self.send_tick_and_wait(Vec::new(), idle, "idle tick")
                                 .await?;
                         }
-                        if fresh_lookup {
+                        let deferred = if fresh_lookup {
                             self.trigger.finish_empty_lookup();
+                            false
                         } else {
-                            fetch_now = self.trigger.finish_batch(true);
-                        }
-                        failure_count = 0;
+                            self.trigger.finish_batch(true)
+                        };
+                        fetch_now = self
+                            .finish_scan_retry(&mut scan_retry, deferred, &mut failure_count)
+                            .await;
                     } else {
+                        current_scan_chains.clear();
+                        scan_retry.clear();
                         tracing::error!("Error: {}", e);
                         self.trigger.finish_empty_lookup();
                         let delay = crate::retry::jittered_exponential_delay(failure_count);
@@ -447,6 +507,32 @@ impl TransactionJob {
                 }
             }
         }
+    }
+
+    /// Finish a cursor scan without losing an earlier skipped or partial
+    /// page. A pending Pusher trigger bypasses the retry delay, but either
+    /// path starts the next lookup from a fresh cursor.
+    async fn finish_scan_retry(
+        &self,
+        scan_retry: &mut ScanRetryState,
+        deferred: bool,
+        failure_count: &mut u32,
+    ) -> bool {
+        if !scan_retry.take() {
+            *failure_count = 0;
+            return deferred;
+        }
+
+        let delay = crate::retry::jittered_exponential_delay(*failure_count);
+        *failure_count = failure_count.saturating_add(1);
+        tracing::warn!(
+            "Transaction scan left pending work; retrying a fresh lookup in {:.1}s",
+            delay.as_secs_f64(),
+        );
+        if !deferred {
+            self.wait_for_retry_or_trigger(delay).await;
+        }
+        true
     }
 
     async fn wait_for_retry_or_trigger(&self, delay: std::time::Duration) {
@@ -1052,6 +1138,19 @@ mod tests {
             BatchStep::Continue {
                 cursor: Some("page-2".to_string()),
                 made_progress: true,
+                requires_fresh_retry: true,
+            }
+        );
+    }
+
+    #[test]
+    fn partial_progress_on_the_final_page_requires_a_fresh_retry() {
+        assert_eq!(
+            batch_step(BatchOutcome::PartialProgress, None),
+            BatchStep::Continue {
+                cursor: None,
+                made_progress: true,
+                requires_fresh_retry: true,
             }
         );
     }
@@ -1063,8 +1162,39 @@ mod tests {
             BatchStep::Continue {
                 cursor: Some("page-2".to_string()),
                 made_progress: false,
+                requires_fresh_retry: true,
             }
         );
+    }
+
+    #[test]
+    fn scan_retry_survives_a_successful_later_page_until_completion() {
+        let mut retry = ScanRetryState::default();
+
+        let BatchStep::Continue {
+            requires_fresh_retry,
+            ..
+        } = batch_step(BatchOutcome::Skipped, Some("page-2".to_string()))
+        else {
+            panic!("a skipped page with a cursor must continue the scan");
+        };
+        if requires_fresh_retry {
+            retry.require();
+        }
+
+        let BatchStep::Continue {
+            requires_fresh_retry,
+            ..
+        } = batch_step(BatchOutcome::Completed, None)
+        else {
+            panic!("a completed final page must complete the scan");
+        };
+        if requires_fresh_retry {
+            retry.require();
+        }
+
+        assert!(retry.take(), "the skipped page must force a fresh lookup");
+        assert!(!retry.take(), "taking the retry starts a clean next scan");
     }
 
     #[test]
@@ -1073,6 +1203,34 @@ mod tests {
             batch_step(BatchOutcome::SubmissionFailed, Some("page-2".to_string())),
             BatchStep::RetryFresh
         );
+    }
+
+    #[test]
+    fn chain_activity_is_compared_only_after_the_full_cursor_scan() {
+        let enjin_matrix = (Network::Enjin, Chain::Matrix);
+        let enjin_relay = (Network::Enjin, Chain::Relay);
+        let canary_matrix = (Network::Canary, Chain::Matrix);
+
+        let mut previous_scan_chains: HashSet<ChainKey> =
+            [enjin_matrix, enjin_relay, canary_matrix]
+                .into_iter()
+                .collect();
+        let mut current_scan_chains = HashSet::new();
+
+        // Simulate three cursor pages: Matrix -> Relay -> Matrix. Matrix must
+        // remain active throughout even though it is absent from page 2.
+        current_scan_chains.insert(enjin_matrix);
+        current_scan_chains.insert(enjin_relay);
+        current_scan_chains.insert(enjin_matrix);
+
+        let idle = complete_chain_scan(&mut previous_scan_chains, &mut current_scan_chains);
+
+        assert_eq!(idle, HashSet::from([canary_matrix]));
+        assert_eq!(
+            previous_scan_chains,
+            HashSet::from([enjin_matrix, enjin_relay])
+        );
+        assert!(current_scan_chains.is_empty());
     }
 
     /// Within a single batch, a per-batch `HashMap<NonceKey, u64>` must:

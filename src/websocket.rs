@@ -290,6 +290,36 @@ fn reconnect_backoff_attempt(current_attempt: u32, connected_for: Duration) -> u
 mod tests {
     use super::*;
 
+    async fn loopback_websocket_pair() -> (Socket, WebSocketStream<TcpStream>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let (client, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        (client, server.await.unwrap())
+    }
+
+    async fn send_application_event(
+        socket: &mut WebSocketStream<TcpStream>,
+        event: &str,
+        channel: &str,
+    ) {
+        socket
+            .send(Message::Text(
+                json!({
+                    "event": event,
+                    "channel": channel,
+                    "data": null,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn decodes_json_encoded_pusher_protocol_payloads() {
         let payload = Value::String(r#"{"socket_id":"1.2","activity_timeout":30}"#.to_string());
@@ -307,6 +337,79 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(frame.event, "TransactionCreated");
+    }
+
+    #[tokio::test]
+    async fn listen_routes_only_matching_channel_events_to_the_corresponding_trigger() {
+        let transaction_trigger = WorkTrigger::new();
+        let wallet_trigger = WorkTrigger::new();
+        let connection = PusherConnection {
+            transaction_trigger: transaction_trigger.clone(),
+            wallet_trigger: wallet_trigger.clone(),
+            status: PusherStatus::new(),
+            app_key: "test-app".to_string(),
+            cluster: "test-cluster".to_string(),
+        };
+        let (client, mut server) = loopback_websocket_pair().await;
+        let listening = tokio::spawn(async move {
+            connection
+                .listen(client, Duration::from_secs(60), "private-daemon")
+                .await
+        });
+
+        send_application_event(&mut server, "TransactionCreated", "private-other").await;
+        assert!(
+            timeout(
+                Duration::from_millis(750),
+                transaction_trigger.wait_until_ready()
+            )
+            .await
+            .is_err(),
+            "an event for another channel must not wake the transaction trigger",
+        );
+        assert!(
+            timeout(Duration::from_millis(50), wallet_trigger.wait_until_ready())
+                .await
+                .is_err(),
+            "an event for another channel must not wake the wallet trigger",
+        );
+
+        send_application_event(&mut server, "TransactionCreated", "private-daemon").await;
+        timeout(
+            Duration::from_secs(2),
+            transaction_trigger.wait_until_ready(),
+        )
+        .await
+        .expect("a matching transaction event must wake its trigger");
+        assert!(
+            timeout(Duration::from_millis(50), wallet_trigger.wait_until_ready())
+                .await
+                .is_err(),
+            "a transaction event must not wake the wallet trigger",
+        );
+        transaction_trigger.begin_fresh_lookup();
+        transaction_trigger.finish_empty_lookup();
+
+        send_application_event(&mut server, "ManagedWalletRequested", "private-daemon").await;
+        timeout(Duration::from_secs(2), wallet_trigger.wait_until_ready())
+            .await
+            .expect("a matching wallet event must wake its trigger");
+        assert!(
+            timeout(
+                Duration::from_millis(50),
+                transaction_trigger.wait_until_ready()
+            )
+            .await
+            .is_err(),
+            "a wallet event must not wake the transaction trigger",
+        );
+
+        server.close(None).await.unwrap();
+        let listen_result = timeout(Duration::from_secs(2), listening)
+            .await
+            .expect("listener must stop after the server closes")
+            .expect("listener task must not panic");
+        assert!(listen_result.is_err());
     }
 
     #[test]
