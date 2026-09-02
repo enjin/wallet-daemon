@@ -120,6 +120,15 @@ impl ScanRetryState {
         self.required = true;
     }
 
+    /// Successful work resets retry escalation unless an earlier page in the
+    /// same scan already required a fresh retry. In that case the retry state
+    /// remains sticky until the scan completes.
+    fn reset_failure_count_after_progress(&self, failure_count: &mut u32) {
+        if !self.required {
+            *failure_count = 0;
+        }
+    }
+
     fn take(&mut self) -> bool {
         std::mem::take(&mut self.required)
     }
@@ -478,6 +487,8 @@ impl TransactionJob {
                                 if made_progress {
                                     no_transaction_count = 0;
                                     unproductive_pages = 0;
+                                    scan_retry
+                                        .reset_failure_count_after_progress(&mut failure_count);
                                 } else {
                                     // A page that submitted nothing counts
                                     // against the same drain bound as a page
@@ -1320,6 +1331,27 @@ mod tests {
 
         assert!(retry.take(), "the skipped page must force a fresh lookup");
         assert!(!retry.take(), "taking the retry starts a clean next scan");
+    }
+
+    #[test]
+    fn partial_progress_resets_failure_backoff_for_a_clean_scan() {
+        let retry = ScanRetryState::default();
+        let mut failure_count = 6;
+
+        retry.reset_failure_count_after_progress(&mut failure_count);
+
+        assert_eq!(failure_count, 0);
+    }
+
+    #[test]
+    fn progress_after_a_skipped_page_preserves_failure_backoff() {
+        let mut retry = ScanRetryState::default();
+        let mut failure_count = 6;
+        retry.require();
+
+        retry.reset_failure_count_after_progress(&mut failure_count);
+
+        assert_eq!(failure_count, 6);
     }
 
     #[test]
