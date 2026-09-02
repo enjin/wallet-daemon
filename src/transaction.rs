@@ -5,7 +5,7 @@ use crate::graphql::{GetPendingTransactions, get_pending_transactions};
 use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
-use crate::work_trigger::{PusherStatus, WorkTrigger};
+use crate::work_trigger::{PusherAwarePoller, PusherStatus, WorkTrigger};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
 use parity_scale_codec::Encode;
 use payload::RawPayload;
@@ -65,7 +65,20 @@ enum BatchStep {
     RetryFresh,
 }
 
-fn batch_step(outcome: BatchOutcome, next_cursor: Option<String>) -> BatchStep {
+/// Decide the next step after a page that produced rows.
+///
+/// `unproductive_pages` counts the consecutive pages in this scan that
+/// submitted nothing. A fully-skipped page advances the cursor for the same
+/// reason an unconvertible one does — so a poison row cannot hide healthy
+/// work on later pages — and therefore needs the same two bounds: the cursor
+/// must actually move, and a single scan may only skip so many pages before
+/// falling back to the paced fresh retry.
+fn batch_step(
+    outcome: BatchOutcome,
+    cursor: Option<&str>,
+    next_cursor: Option<String>,
+    unproductive_pages: u32,
+) -> BatchStep {
     match outcome {
         BatchOutcome::Completed => BatchStep::Continue {
             cursor: next_cursor,
@@ -77,11 +90,19 @@ fn batch_step(outcome: BatchOutcome, next_cursor: Option<String>) -> BatchStep {
             made_progress: true,
             requires_fresh_retry: true,
         },
-        BatchOutcome::Skipped if next_cursor.is_some() => BatchStep::Continue {
-            cursor: next_cursor,
-            made_progress: false,
-            requires_fresh_retry: true,
-        },
+        BatchOutcome::Skipped
+            if crate::retry::should_continue_empty_drain(
+                cursor,
+                next_cursor.as_deref(),
+                unproductive_pages,
+            ) =>
+        {
+            BatchStep::Continue {
+                cursor: next_cursor,
+                made_progress: false,
+                requires_fresh_retry: true,
+            }
+        }
         BatchOutcome::Skipped | BatchOutcome::SubmissionFailed => BatchStep::RetryFresh,
     }
 }
@@ -352,9 +373,10 @@ impl TransactionJob {
         let mut fetch_now = true; // Mandatory startup catch-up.
         let mut failure_count = 0u32;
         let mut scan_retry = ScanRetryState::default();
-        // Consecutive pages in the current scan that contained no convertible
-        // rows. Bounds the unpaced drain past malformed data.
-        let mut empty_pages = 0u32;
+        // Consecutive pages in the current scan that submitted nothing —
+        // either no convertible rows, or convertible rows that all failed to
+        // sign. Bounds the unpaced drain past both kinds of bad data.
+        let mut unproductive_pages = 0u32;
         let mut pusher_aware_poll = self.pusher_status.poller();
 
         loop {
@@ -386,20 +408,20 @@ impl TransactionJob {
                         if crate::retry::should_continue_empty_drain(
                             cursor.as_deref(),
                             next_cursor.as_deref(),
-                            empty_pages,
+                            unproductive_pages,
                         ) {
-                            empty_pages += 1;
+                            unproductive_pages += 1;
                             cursor = next_cursor;
                             scan_retry.require();
                             fetch_now = true;
                         } else {
                             if next_cursor.is_some() {
                                 tracing::warn!(
-                                    "Abandoning cursor scan after {empty_pages} page(s) containing no convertible transactions; restarting from a fresh lookup",
+                                    "Abandoning cursor scan after {unproductive_pages} page(s) that submitted nothing; restarting from a fresh lookup",
                                 );
                                 scan_retry.require();
                             }
-                            empty_pages = 0;
+                            unproductive_pages = 0;
                             cursor = None;
                             let idle = complete_chain_scan(
                                 &mut previous_scan_chains,
@@ -416,11 +438,15 @@ impl TransactionJob {
                                 self.trigger.finish_batch(true)
                             };
                             fetch_now = self
-                                .finish_scan_retry(&mut scan_retry, deferred, &mut failure_count)
+                                .finish_scan_retry(
+                                    &mut scan_retry,
+                                    deferred,
+                                    &mut failure_count,
+                                    &mut pusher_aware_poll,
+                                )
                                 .await;
                         }
                     } else {
-                        empty_pages = 0;
                         let active: HashSet<ChainKey> = transaction_reqs
                             .iter()
                             .map(|request| (request.network, request.chain))
@@ -438,7 +464,12 @@ impl TransactionJob {
                             .await?;
                         let deferred = self.trigger.finish_batch(scan_complete);
 
-                        match batch_step(outcome, next_cursor) {
+                        match batch_step(
+                            outcome,
+                            cursor.as_deref(),
+                            next_cursor,
+                            unproductive_pages,
+                        ) {
                             BatchStep::Continue {
                                 cursor: next_cursor,
                                 made_progress,
@@ -446,6 +477,12 @@ impl TransactionJob {
                             } => {
                                 if made_progress {
                                     no_transaction_count = 0;
+                                    unproductive_pages = 0;
+                                } else {
+                                    // A page that submitted nothing counts
+                                    // against the same drain bound as a page
+                                    // with no convertible rows.
+                                    unproductive_pages += 1;
                                 }
                                 if requires_fresh_retry {
                                     scan_retry.require();
@@ -457,6 +494,7 @@ impl TransactionJob {
                                             &mut scan_retry,
                                             deferred,
                                             &mut failure_count,
+                                            &mut pusher_aware_poll,
                                         )
                                         .await;
                                 } else {
@@ -467,14 +505,15 @@ impl TransactionJob {
                                 cursor = None;
                                 current_scan_chains.clear();
                                 scan_retry.clear();
-                                empty_pages = 0;
+                                unproductive_pages = 0;
                                 let delay = crate::retry::jittered_exponential_delay(failure_count);
                                 failure_count = failure_count.saturating_add(1);
                                 tracing::warn!(
                                     "Transaction batch made no progress; retrying a fresh lookup in {:.1}s",
                                     delay.as_secs_f64(),
                                 );
-                                self.wait_for_retry_or_trigger(delay).await;
+                                self.wait_for_retry_or_trigger(delay, &mut pusher_aware_poll)
+                                    .await;
                                 fetch_now = true;
                             }
                         }
@@ -485,7 +524,7 @@ impl TransactionJob {
                     // is meaningless after we've lost our place in the
                     // server-side scan.
                     cursor = None;
-                    empty_pages = 0;
+                    unproductive_pages = 0;
                     if e.to_string() == NO_TRANSACTIONS_MSG {
                         if no_transaction_count % 10 == 0 {
                             tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
@@ -507,7 +546,12 @@ impl TransactionJob {
                             self.trigger.finish_batch(true)
                         };
                         fetch_now = self
-                            .finish_scan_retry(&mut scan_retry, deferred, &mut failure_count)
+                            .finish_scan_retry(
+                                &mut scan_retry,
+                                deferred,
+                                &mut failure_count,
+                                &mut pusher_aware_poll,
+                            )
                             .await;
                     } else {
                         current_scan_chains.clear();
@@ -520,7 +564,8 @@ impl TransactionJob {
                             "Retrying GetPendingTransactions in {:.1}s",
                             delay.as_secs_f64(),
                         );
-                        self.wait_for_retry_or_trigger(delay).await;
+                        self.wait_for_retry_or_trigger(delay, &mut pusher_aware_poll)
+                            .await;
                         fetch_now = true;
                     }
                 }
@@ -536,6 +581,7 @@ impl TransactionJob {
         scan_retry: &mut ScanRetryState,
         deferred: bool,
         failure_count: &mut u32,
+        pusher_aware_poll: &mut PusherAwarePoller,
     ) -> bool {
         if !scan_retry.take() {
             *failure_count = 0;
@@ -551,7 +597,8 @@ impl TransactionJob {
         // The delay is honoured even when `deferred` — work we already know
         // about is exactly what this scan failed to make progress on, so
         // letting it skip the backoff would remove all pacing.
-        self.wait_for_retry_or_trigger(delay).await;
+        self.wait_for_retry_or_trigger(delay, pusher_aware_poll)
+            .await;
         true
     }
 
@@ -559,9 +606,21 @@ impl TransactionJob {
     /// short; work that was already pending when the failure occurred does
     /// not, so a failing platform can never be turned into an unpaced storm
     /// of requests.
-    async fn wait_for_retry_or_trigger(&self, delay: std::time::Duration) {
+    ///
+    /// The fallback poll is also allowed to cut the delay short. `failure_count`
+    /// is never reset while any scan leaves work behind, so a single row the
+    /// daemon can never sign drives the delay to the 60s cap and holds it
+    /// there. Without this arm that cap would silently override the six-second
+    /// Pusher-outage poll — suppressing the fallback exactly when it is the
+    /// only thing left to notice new work.
+    async fn wait_for_retry_or_trigger(
+        &self,
+        delay: std::time::Duration,
+        pusher_aware_poll: &mut PusherAwarePoller,
+    ) {
         tokio::select! {
             _ = sleep(delay) => {}
+            _ = pusher_aware_poll.tick() => {}
             _ = self.trigger.wait_for_new_event() => {
                 tracing::info!("New transaction work interrupted the retry delay");
             }
@@ -1158,7 +1217,12 @@ mod tests {
     #[test]
     fn partial_progress_keeps_the_cursor_and_continues_immediately() {
         assert_eq!(
-            batch_step(BatchOutcome::PartialProgress, Some("page-2".to_string())),
+            batch_step(
+                BatchOutcome::PartialProgress,
+                None,
+                Some("page-2".to_string()),
+                0
+            ),
             BatchStep::Continue {
                 cursor: Some("page-2".to_string()),
                 made_progress: true,
@@ -1170,7 +1234,7 @@ mod tests {
     #[test]
     fn partial_progress_on_the_final_page_requires_a_fresh_retry() {
         assert_eq!(
-            batch_step(BatchOutcome::PartialProgress, None),
+            batch_step(BatchOutcome::PartialProgress, Some("page-1"), None, 0),
             BatchStep::Continue {
                 cursor: None,
                 made_progress: true,
@@ -1182,12 +1246,49 @@ mod tests {
     #[test]
     fn a_skipped_page_advances_when_more_pages_exist() {
         assert_eq!(
-            batch_step(BatchOutcome::Skipped, Some("page-2".to_string())),
+            batch_step(BatchOutcome::Skipped, None, Some("page-2".to_string()), 0),
             BatchStep::Continue {
                 cursor: Some("page-2".to_string()),
                 made_progress: false,
                 requires_fresh_retry: true,
             }
+        );
+    }
+
+    #[test]
+    fn a_skipped_page_stops_when_the_server_repeats_the_cursor() {
+        // Without this the loop re-requests the same unsignable page forever
+        // with no delay between requests.
+        assert_eq!(
+            batch_step(
+                BatchOutcome::Skipped,
+                Some("page-1"),
+                Some("page-1".to_string()),
+                0
+            ),
+            BatchStep::RetryFresh
+        );
+    }
+
+    #[test]
+    fn a_skipped_page_stops_after_the_consecutive_page_limit() {
+        assert!(matches!(
+            batch_step(
+                BatchOutcome::Skipped,
+                Some("a"),
+                Some("b".to_string()),
+                crate::retry::MAX_CONSECUTIVE_EMPTY_PAGES - 1
+            ),
+            BatchStep::Continue { .. }
+        ));
+        assert_eq!(
+            batch_step(
+                BatchOutcome::Skipped,
+                Some("a"),
+                Some("b".to_string()),
+                crate::retry::MAX_CONSECUTIVE_EMPTY_PAGES
+            ),
+            BatchStep::RetryFresh
         );
     }
 
@@ -1198,7 +1299,7 @@ mod tests {
         let BatchStep::Continue {
             requires_fresh_retry,
             ..
-        } = batch_step(BatchOutcome::Skipped, Some("page-2".to_string()))
+        } = batch_step(BatchOutcome::Skipped, None, Some("page-2".to_string()), 0)
         else {
             panic!("a skipped page with a cursor must continue the scan");
         };
@@ -1209,7 +1310,7 @@ mod tests {
         let BatchStep::Continue {
             requires_fresh_retry,
             ..
-        } = batch_step(BatchOutcome::Completed, None)
+        } = batch_step(BatchOutcome::Completed, Some("page-2"), None, 1)
         else {
             panic!("a completed final page must complete the scan");
         };
@@ -1224,7 +1325,12 @@ mod tests {
     #[test]
     fn submission_failure_restarts_from_a_fresh_cursor() {
         assert_eq!(
-            batch_step(BatchOutcome::SubmissionFailed, Some("page-2".to_string())),
+            batch_step(
+                BatchOutcome::SubmissionFailed,
+                None,
+                Some("page-2".to_string()),
+                0
+            ),
             BatchStep::RetryFresh
         );
     }

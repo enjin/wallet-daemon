@@ -1,6 +1,6 @@
 use crate::graphql::populate_managed_wallets::PopulateManagedWalletInput;
 use crate::graphql::{GetPendingManagedWalletCreations, get_pending_managed_wallet_creations};
-use crate::work_trigger::{PusherStatus, WorkTrigger};
+use crate::work_trigger::{PusherAwarePoller, PusherStatus, WorkTrigger};
 use crate::{platform_client, utils};
 use subxt_signer::DeriveJunction;
 use subxt_signer::sr25519::Keypair;
@@ -223,8 +223,9 @@ impl DeriveWalletJob {
                         tracing::info!("No pending managed wallets");
 
                         let step = empty_scan_step(restart_after_scan, deferred);
-                        (cursor, restart_after_scan, fetch_now) =
-                            self.apply_step(step, &mut failure_count).await;
+                        (cursor, restart_after_scan, fetch_now) = self
+                            .apply_step(step, &mut failure_count, &mut pusher_aware_poll)
+                            .await;
                     }
                 }
                 Ok((requests, next_cursor)) => {
@@ -234,8 +235,9 @@ impl DeriveWalletJob {
                     let deferred = self.trigger.finish_batch(scan_complete);
 
                     let step = wallet_step(outcome, next_cursor, restart_after_scan, deferred);
-                    (cursor, restart_after_scan, fetch_now) =
-                        self.apply_step(step, &mut failure_count).await;
+                    (cursor, restart_after_scan, fetch_now) = self
+                        .apply_step(step, &mut failure_count, &mut pusher_aware_poll)
+                        .await;
                 }
                 Err(error) => {
                     cursor = None;
@@ -249,7 +251,8 @@ impl DeriveWalletJob {
                         "Retrying managed-wallet lookup in {:.1}s",
                         delay.as_secs_f64(),
                     );
-                    self.wait_for_retry_or_trigger(delay).await;
+                    self.wait_for_retry_or_trigger(delay, &mut pusher_aware_poll)
+                        .await;
                     fetch_now = true;
                 }
             }
@@ -262,6 +265,7 @@ impl DeriveWalletJob {
         &self,
         step: WalletStep,
         failure_count: &mut u32,
+        pusher_aware_poll: &mut PusherAwarePoller,
     ) -> (Option<String>, bool, bool) {
         match step {
             WalletStep::Continue {
@@ -283,7 +287,8 @@ impl DeriveWalletJob {
                 let delay = crate::retry::jittered_exponential_delay(*failure_count);
                 *failure_count = failure_count.saturating_add(1);
                 tracing::warn!("{reason}; continuing lookup in {:.1}s", delay.as_secs_f64());
-                self.wait_for_retry_or_trigger(delay).await;
+                self.wait_for_retry_or_trigger(delay, pusher_aware_poll)
+                    .await;
                 (cursor, restart_after_scan, true)
             }
         }
@@ -293,9 +298,21 @@ impl DeriveWalletJob {
     /// short; work that was already pending when the failure occurred does
     /// not, so a failing platform can never be turned into an unpaced storm
     /// of requests.
-    async fn wait_for_retry_or_trigger(&self, delay: std::time::Duration) {
+    ///
+    /// The fallback poll is also allowed to cut the delay short. `failure_count`
+    /// is never reset while any scan leaves work behind, so a single row the
+    /// daemon can never convert drives the delay to the 60s cap and holds it
+    /// there. Without this arm that cap would silently override the six-second
+    /// Pusher-outage poll — suppressing the fallback exactly when it is the
+    /// only thing left to notice new work.
+    async fn wait_for_retry_or_trigger(
+        &self,
+        delay: std::time::Duration,
+        pusher_aware_poll: &mut PusherAwarePoller,
+    ) {
         tokio::select! {
             _ = sleep(delay) => {}
+            _ = pusher_aware_poll.tick() => {}
             _ = self.trigger.wait_for_new_event() => {
                 tracing::info!("New managed-wallet work interrupted the retry delay");
             }

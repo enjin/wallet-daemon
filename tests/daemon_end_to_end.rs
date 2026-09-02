@@ -200,9 +200,56 @@ async fn a_server_that_repeats_its_cursor_does_not_trap_the_daemon() {
     );
 
     let daemon = Daemon::start(&platform);
+    // Anchor the measurement to observed daemon activity. A bare sleep plus an
+    // upper bound passes when the daemon never starts at all — a slow boot, a
+    // crash, or a missing env var all yield zero lookups, which trivially
+    // satisfies `<= 12` and silently disarms this guard.
+    platform
+        .wait_for("the first lookup", BOOT, |p| {
+            p.count_of("GetPendingTransactions") >= 1
+        })
+        .await;
+    platform.reset_calls();
     tokio::time::sleep(Duration::from_secs(6)).await;
 
     let lookups = platform.count_of("GetPendingTransactions");
+    assert!(
+        lookups >= 2,
+        "the daemon stopped scanning entirely ({lookups} lookups in 6s); logs:\n{}",
+        daemon.dump_logs()
+    );
+    assert!(
+        lookups <= 12,
+        "{lookups} lookups in 6s means the daemon is looping on a repeated cursor; logs:\n{}",
+        daemon.dump_logs()
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_cursor_on_an_unsignable_page_does_not_trap_the_daemon() {
+    // The sibling of the test above for the *other* way a page can produce
+    // nothing: rows that convert fine but can never be signed. That path
+    // reaches `BatchOutcome::Skipped` rather than the empty-page drain, and
+    // needs the same cursor-advance and page bounds.
+    let platform = MockPlatform::start().await;
+    platform.set_tx_page(None, vec![PendingTx::poison("bad")], Some("stuck"));
+    platform.set_tx_page(Some("stuck"), vec![PendingTx::poison("bad")], Some("stuck"));
+
+    let daemon = Daemon::start(&platform);
+    platform
+        .wait_for("the first lookup", BOOT, |p| {
+            p.count_of("GetPendingTransactions") >= 1
+        })
+        .await;
+    platform.reset_calls();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    let lookups = platform.count_of("GetPendingTransactions");
+    assert!(
+        lookups >= 2,
+        "the daemon stopped scanning entirely ({lookups} lookups in 6s); logs:\n{}",
+        daemon.dump_logs()
+    );
     assert!(
         lookups <= 12,
         "{lookups} lookups in 6s means the daemon is looping on a repeated cursor; logs:\n{}",

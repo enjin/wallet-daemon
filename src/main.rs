@@ -49,9 +49,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // when it is about to generate a NEW wallet identity, and subcommands such
     // as `print-seed` call it, so a subscriber installed after the subcommand
     // match would silently swallow exactly the warning that matters most.
+    //
+    // The subscriber writes to stderr, not the `fmt()` default of stdout.
+    // `print-seed` prints the mnemonic to stdout and nothing else, so a log
+    // line on stdout would land in the middle of a scripted `print-seed >
+    // seed.txt` capture — the new-identity warning above, or the v1 migration
+    // `info!`, immediately ahead of the secret.
     let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(log_filter))
+        .with_writer(std::io::stderr)
         .finish()
         .try_init()?;
 
