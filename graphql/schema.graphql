@@ -113,6 +113,11 @@ input SignTransactionInput {
     signedAbandonExtrinsic: String!
 }
 
+type PusherSocketAuth {
+  auth: String!
+  channel: String!
+}
+
 type Query {
   GetAccountNonce(network: Network!, chain: Chain!, address: String!): Int!
   GetChainInfo(network: Network!, chain: Chain!): ChainInfo
@@ -121,6 +126,8 @@ type Query {
 }
 
 type Mutation {
+
+  AuthenticatePusherSocket(id: String!): PusherSocketAuth!
 
   SignTransactions(
       transactions: [SignTransactionInput!]!

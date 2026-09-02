@@ -53,7 +53,15 @@ pub fn load_seed(seed_path: PathBuf, key_pass: &str, print_seed: bool) -> Keypai
         PrintKind::Normal
     };
 
-    if !seed_path.exists() || seed_path.is_file() {
+    if !seed_path.exists() {
+        tracing::warn!(
+            "No wallet seed exists at {}; generating a NEW wallet identity. Restore the retained wallet.seed and matching KEY_PASS before continuing if this deployment was meant to recover an existing daemon.",
+            seed_path.display(),
+        );
+        return load_wallet(&seed_path, key_pass, print_kind);
+    }
+
+    if seed_path.is_file() {
         return load_wallet(&seed_path, key_pass, print_kind);
     }
 
@@ -80,7 +88,11 @@ pub fn load_seed(seed_path: PathBuf, key_pass: &str, print_seed: bool) -> Keypai
     };
 
     if !seed_path.exists() {
-        return write_mnemonic(&seed_path, key_pass, None, true).1;
+        tracing::warn!(
+            "No wallet seed exists in persistent directory {}; generating a NEW wallet identity. Restore the retained wallet.seed and matching KEY_PASS before continuing if this deployment was meant to recover an existing daemon.",
+            seed_path.parent().unwrap_or(&seed_path).display(),
+        );
+        write_mnemonic(&seed_path, key_pass, None, true);
     }
 
     tracing::debug!("loading seed from path: {}", seed_path.display());
@@ -206,6 +218,21 @@ pub fn load_wallet(seed_path: &Path, key_pass: &str, print_kind: PrintKind) -> K
             account_id.to_ss58check_with_version(Ss58AddressFormat::custom(9030))
         );
         println!(
+            "** Public Key          (Hex): 0x{}",
+            hex::encode(public_key)
+        );
+    }
+
+    if print_kind == PrintKind::Seed {
+        // Identify which wallet was just printed so an operator recovering a
+        // daemon can confirm it is the expected one rather than a freshly
+        // minted identity. This goes to stderr so stdout stays exactly the
+        // mnemonic for scripted use.
+        eprintln!(
+            "** Enjin Matrixchain  (SS58): {}",
+            account_id.to_ss58check_with_version(Ss58AddressFormat::custom(1110))
+        );
+        eprintln!(
             "** Public Key          (Hex): 0x{}",
             hex::encode(public_key)
         );

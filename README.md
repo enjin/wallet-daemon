@@ -1,10 +1,10 @@
 # Enjin Wallet Daemon
 
-A lightweight outbound-only signer for Enjin Platform Cloud transactions.
+A lightweight outbound-only signer for Enjin Platform transactions.
 
 [![License: LGPL 3.0](https://img.shields.io/badge/license-LGPL_3.0-purple)](https://opensource.org/license/lgpl-3-0/)
 
-The daemon polls Enjin Platform Cloud for pending transactions, signs them with the configured wallet, and returns signed payloads to the platform for broadcast. It does not accept inbound transaction requests, so the host running the daemon should not expose public ports for daemon traffic.
+The daemon listens for authenticated Enjin Platform WebSocket events, fetches pending work through GraphQL, signs it with the configured wallet, and returns signed payloads to the platform for broadcast. A three-minute safety poll covers missed events while the subscription is healthy; if Pusher is unavailable, the daemon automatically resumes six-second polling until the authenticated subscription is restored. It does not accept inbound transaction requests, so the host running the daemon should not expose public ports for daemon traffic.
 
 For the full user guide, including binary downloads, Docker, AWS CloudFormation, import, export, and migration workflows, see [Using the Wallet Daemon](https://docs.enjin.io/getting-started/using-wallet-daemon).
 
@@ -14,7 +14,7 @@ The daemon is security-sensitive.
 
 - It stores an encrypted `wallet.seed` file on disk.
 - `KEY_PASS` encrypts and decrypts `wallet.seed`.
-- `PLATFORM_KEY` authenticates the daemon with Enjin Platform Cloud.
+- `PLATFORM_KEY` authenticates the daemon with Enjin Platform.
 
 Back up `wallet.seed` and `KEY_PASS` separately. Losing either value can make the wallet unrecoverable. Do not rotate `KEY_PASS` for an existing `wallet.seed`; changing `KEY_PASS` is not currently supported.
 
@@ -27,8 +27,11 @@ The daemon reads configuration from environment variables or a local `.env` file
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `KEY_PASS` | Yes | Password used to encrypt and decrypt `wallet.seed`. Use a unique, high-entropy value. |
-| `PLATFORM_KEY` | Yes | Enjin Platform Cloud API token used by the daemon. |
+| `PLATFORM_KEY` | Yes | Enjin Platform API token used by the daemon. |
 | `SEED_PATH` | No | Optional path to a seed file or seed directory. |
+| `PLATFORM_URL` | No | GraphQL daemon endpoint. Defaults to `https://platform.enjin.io/graphql/daemon`. |
+| `PUSHER_APP_KEY` | No | Pusher application key. Defaults to Enjin Platform's published key. |
+| `PUSHER_CLUSTER` | No | Pusher cluster. Defaults to `us2`. |
 
 Minimal `.env`:
 
@@ -36,6 +39,16 @@ Minimal `.env`:
 KEY_PASS=your-unique-key-password
 PLATFORM_KEY=your-platform-api-token
 ```
+
+### AWS CloudFormation lifecycle
+
+Updating `PlatformApiToken` changes its Secrets Manager value, but an already-running ECS task does not reread secrets. After the stack update completes, run the command exposed by the stack's `PlatformApiTokenRestartCommand` output to force a replacement task.
+
+The generated EFS file system and `KEY_PASS` secret are retained when the stack is deleted. To recreate the stack with the same wallet identity, pass the previous `WalletSeedFileSystemId` and `KeyPassSecretArn` outputs as `ExistingWalletSeedFileSystemId` and `ExistingKeyPassSecretArn`. Supply both values together; leaving both empty intentionally creates a new wallet.
+
+> **Every later `update-stack` on a recovery-mode stack must re-supply both `Existing*` values.** CloudFormation applies a parameter's default to any parameter omitted from an `update-stack` call, and the default for both is empty. Omitting them — for example in a CI job that only rolls the image — reverts the stack to "create a new wallet": a new empty EFS file system and a new `KEY_PASS` are created and the daemon starts signing from a different address. The previous wallet is not destroyed (both resources are retained and their ids remain in the old stack's outputs), but nothing fails loudly. Always pass `ParameterKey=ExistingWalletSeedFileSystemId,UsePreviousValue=true` and the same for `ExistingKeyPassSecretArn`, or use the console update flow, which pre-populates existing values. CloudFormation cannot express "this parameter was previously non-empty", so there is no template-level guard for this — the daemon does log a warning when it generates a new wallet identity, so watch for it after any stack update.
+
+Recovery also requires the previous stack's EFS mount targets to be gone: a file system can only have mount targets in one VPC, and the new stack creates its own VPC. Delete the old stack (or its mount targets) before creating the replacement; a side-by-side rehearsal fails with `MountTargetConflict` and rolls back.
 
 ### Windows / PowerShell
 
@@ -89,6 +102,22 @@ The published image is available on [Docker Hub](https://hub.docker.com/r/enjin/
 
 ```bash
 cargo test
+```
+
+This runs the unit tests plus an end-to-end suite (`tests/daemon_end_to_end.rs`)
+that starts the real daemon binary against a mock Enjin Platform
+(`tests/support/mod.rs`) on loopback. The daemon obtains chain metadata from the
+platform via `GetChainInfo`, so the mock can drive the full fetch/sign/submit
+path with no chain, no funds and no external network — including the failure
+paths a live platform will not reproduce on demand: multi-page scans, rows that
+cannot be signed, a platform outage, and a server that repeats its cursor.
+
+The outage test deliberately measures elapsed time to prove the retry backoff
+escalates rather than becoming a request storm, so the suite takes ~25 seconds.
+To run only the fast unit tests:
+
+```bash
+cargo test --bins
 ```
 
 ## License

@@ -1,0 +1,477 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Run the Enjin Wallet Daemon on ECS Fargate with encrypted EFS seed storage."
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Wallet daemon"
+        Parameters:
+          - PlatformApiToken
+          - WalletDaemonImage
+          - ExistingWalletSeedFileSystemId
+          - ExistingKeyPassSecretArn
+    ParameterLabels:
+      PlatformApiToken:
+        default: "Enjin Platform API token"
+      WalletDaemonImage:
+        default: "Wallet daemon image"
+      ExistingWalletSeedFileSystemId:
+        default: "Existing wallet seed EFS file system (recovery only)"
+      ExistingKeyPassSecretArn:
+        default: "Existing KEY_PASS secret ARN (recovery only)"
+
+Parameters:
+  PlatformApiToken:
+    Type: String
+    NoEcho: true
+    MinLength: 50
+    Description: "API token generated in Enjin Platform. Must be at least 50 characters. Stored in Secrets Manager and injected as PLATFORM_KEY."
+  WalletDaemonImage:
+    Type: String
+    Default: "enjin/wallet-daemon:v3.0.10"
+    MinLength: 1
+    Description: "Versioned Docker image to run. Do not use latest for production deployments."
+  ExistingWalletSeedFileSystemId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^fs-[0-9a-fA-F]+$"
+    Description: "For stack recovery, provide the retained WalletSeedFileSystemId output from the previous stack together with ExistingKeyPassSecretArn. Leave both empty for a new wallet. WARNING: once set, EVERY later update-stack must re-supply this value (UsePreviousValue=true). Omitting it silently reverts to the empty default, which creates a NEW empty file system and a NEW KEY_PASS, and the daemon then mints a different wallet identity."
+  ExistingKeyPassSecretArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$"
+    Description: "For stack recovery, provide the retained KeyPassSecretArn output from the previous stack together with ExistingWalletSeedFileSystemId. Leave both empty for a new wallet. WARNING: once set, EVERY later update-stack must re-supply this value (UsePreviousValue=true). Omitting it silently reverts to the empty default, which creates a NEW empty file system and a NEW KEY_PASS, and the daemon then mints a different wallet identity."
+
+Rules:
+  ExistingWalletResourcesMustBeProvidedTogether:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::And:
+                - Fn::Equals:
+                    - Ref: ExistingWalletSeedFileSystemId
+                    - ""
+                - Fn::Equals:
+                    - Ref: ExistingKeyPassSecretArn
+                    - ""
+            - Fn::And:
+                - Fn::Not:
+                    - Fn::Equals:
+                        - Ref: ExistingWalletSeedFileSystemId
+                        - ""
+                - Fn::Not:
+                    - Fn::Equals:
+                        - Ref: ExistingKeyPassSecretArn
+                        - ""
+        AssertDescription: "ExistingWalletSeedFileSystemId and ExistingKeyPassSecretArn must either both be supplied or both be empty."
+
+Conditions:
+  CreateWalletResources: !Equals [!Ref ExistingWalletSeedFileSystemId, ""]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.72.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.72.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-a"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.72.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-b"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-rt"
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  DaemonSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Wallet daemon task: no inbound traffic, limited outbound traffic."
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - Description: "Outbound HTTPS for Enjin Platform, Docker Hub, and AWS APIs."
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-daemon-sg"
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow NFS from the wallet daemon task only."
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-efs-sg"
+
+  DaemonEgressToEfs:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: "Outbound NFS to the wallet seed EFS mount target."
+      GroupId: !Ref DaemonSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      DestinationSecurityGroupId: !Ref EfsSecurityGroup
+
+  EfsIngressFromDaemon:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: "NFS from wallet daemon task."
+      GroupId: !Ref EfsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      SourceSecurityGroupId: !Ref DaemonSecurityGroup
+
+  KeyPassSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateWalletResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: "Generated KEY_PASS for the Enjin Wallet Daemon. Do not rotate without migrating wallet.seed."
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-key-pass"
+
+  PlatformKeySecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: "Enjin Platform API token injected into the wallet daemon as PLATFORM_KEY."
+      SecretString: !Ref PlatformApiToken
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-platform-key"
+
+  WalletSeedFileSystem:
+    Type: AWS::EFS::FileSystem
+    Condition: CreateWalletResources
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BackupPolicy:
+        Status: ENABLED
+      Encrypted: true
+      FileSystemPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyNonTlsClientAccess
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - elasticfilesystem:ClientMount
+              - elasticfilesystem:ClientWrite
+              - elasticfilesystem:ClientRootAccess
+            Resource: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-wallet-seed"
+
+  WalletSeedAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !If
+        - CreateWalletResources
+        - !Ref WalletSeedFileSystem
+        - !Ref ExistingWalletSeedFileSystemId
+      PosixUser:
+        Uid: "1000"
+        Gid: "1000"
+      RootDirectory:
+        Path: /wallet-daemon
+        CreationInfo:
+          OwnerUid: "1000"
+          OwnerGid: "1000"
+          Permissions: "0700"
+
+  EfsMountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !If
+        - CreateWalletResources
+        - !Ref WalletSeedFileSystem
+        - !Ref ExistingWalletSeedFileSystemId
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  EfsMountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !If
+        - CreateWalletResources
+        - !Ref WalletSeedFileSystem
+        - !Ref ExistingWalletSeedFileSystemId
+      SubnetId: !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${AWS::StackName}-cluster"
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${AWS::StackName}/wallet-daemon"
+      RetentionInDays: 30
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      Policies:
+        - PolicyName: ReadWalletDaemonSecrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !If
+                    - CreateWalletResources
+                    - !Ref KeyPassSecret
+                    - !Ref ExistingKeyPassSecretArn
+                  - !Ref PlatformKeySecret
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MountWalletSeedEfs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${FileSystemId}"
+                  - FileSystemId: !If
+                      - CreateWalletResources
+                      - !Ref WalletSeedFileSystem
+                      - !Ref ExistingWalletSeedFileSystemId
+                Condition:
+                  Bool:
+                    elasticfilesystem:AccessedViaMountTarget: "true"
+                  StringEquals:
+                    elasticfilesystem:AccessPointArn: !Sub "arn:${AWS::Partition}:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:access-point/${WalletSeedAccessPoint}"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${AWS::StackName}-wallet-daemon"
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: wallet-seed
+          EFSVolumeConfiguration:
+            FilesystemId: !If
+              - CreateWalletResources
+              - !Ref WalletSeedFileSystem
+              - !Ref ExistingWalletSeedFileSystemId
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref WalletSeedAccessPoint
+              IAM: ENABLED
+      ContainerDefinitions:
+        - Name: wallet-daemon
+          Image: !Ref WalletDaemonImage
+          Essential: true
+          User: "1000:1000"
+          ReadonlyRootFilesystem: true
+          Environment:
+            - Name: SEED_PATH
+              Value: /wallet/store
+          Secrets:
+            - Name: KEY_PASS
+              ValueFrom: !If
+                - CreateWalletResources
+                - !Ref KeyPassSecret
+                - !Ref ExistingKeyPassSecretArn
+            - Name: PLATFORM_KEY
+              ValueFrom: !Ref PlatformKeySecret
+          MountPoints:
+            - SourceVolume: wallet-seed
+              ContainerPath: /wallet/store
+              ReadOnly: false
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: wallet-daemon
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - PublicDefaultRoute
+      - EfsMountTargetA
+      - EfsMountTargetB
+    Properties:
+      ServiceName: !Sub "${AWS::StackName}-service"
+      Cluster: !Ref Cluster
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      TaskDefinition: !Ref TaskDefinition
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref DaemonSecurityGroup
+          Subnets:
+            - !Ref PublicSubnetA
+            - !Ref PublicSubnetB
+
+Outputs:
+  CloudWatchLogGroup:
+    Description: "CloudWatch log group containing daemon startup output and wallet public addresses."
+    Value: !Ref LogGroup
+
+  CloudWatchLogsUrl:
+    Description: "AWS Console URL for CloudWatch Logs. Filter for the CloudWatchLogGroup output."
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups"
+
+  EcsClusterName:
+    Description: "ECS cluster running the wallet daemon."
+    Value: !Ref Cluster
+
+  EcsServiceName:
+    Description: "ECS service running exactly one wallet daemon task."
+    Value: !GetAtt Service.Name
+
+  PlatformApiTokenRestartCommand:
+    Description: "Run this after changing PlatformApiToken so ECS replaces the running task and reads the new secret value."
+    Value: !Sub "aws ecs update-service --region ${AWS::Region} --cluster ${Cluster} --service ${Service.Name} --force-new-deployment"
+
+  WalletSeedFileSystemId:
+    Description: "Retained encrypted EFS file system containing wallet.seed."
+    Value: !If
+      - CreateWalletResources
+      - !Ref WalletSeedFileSystem
+      - !Ref ExistingWalletSeedFileSystemId
+
+  WalletSeedAccessPointId:
+    Description: "EFS access point mounted by the wallet daemon task."
+    Value: !Ref WalletSeedAccessPoint
+
+  KeyPassSecretArn:
+    Description: "Retained Secrets Manager secret containing KEY_PASS."
+    Value: !If
+      - CreateWalletResources
+      - !Ref KeyPassSecret
+      - !Ref ExistingKeyPassSecretArn
+
+  PlatformKeySecretArn:
+    Description: "Retained Secrets Manager secret containing PLATFORM_KEY."
+    Value: !Ref PlatformKeySecret

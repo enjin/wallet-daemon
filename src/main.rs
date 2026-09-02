@@ -6,6 +6,8 @@ use crate::transaction::TransactionJob;
 use crate::types::{Cli, Commands};
 use crate::wallet::DeriveWalletJob;
 use crate::wallet_loader::{load_seed, resolve_seed_path};
+use crate::websocket::PusherConnection;
+use crate::work_trigger::{PusherStatus, WorkTrigger};
 use clap::Parser;
 use reqwest::header::HeaderMap;
 use std::env;
@@ -28,17 +30,37 @@ mod graphql;
 mod importer;
 mod multitenant;
 mod platform_client;
+mod retry;
 pub mod substrate_client;
 mod transaction;
 mod types;
 mod utils;
 mod wallet;
 mod wallet_loader;
+mod websocket;
+mod work_trigger;
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load `.env` (transcoding UTF-16 to UTF-8) before any `dotenvy::var` call.
     env_loader::load_env();
+
+    // init logging before anything that can emit a warning. `load_seed` warns
+    // when it is about to generate a NEW wallet identity, and subcommands such
+    // as `print-seed` call it, so a subscriber installed after the subcommand
+    // match would silently swallow exactly the warning that matters most.
+    //
+    // The subscriber writes to stderr, not the `fmt()` default of stdout.
+    // `print-seed` prints the mnemonic to stdout and nothing else, so a log
+    // line on stdout would land in the middle of a scripted `print-seed >
+    // seed.txt` capture — the new-identity warning above, or the v1 migration
+    // `info!`, immediately ahead of the secret.
+    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(log_filter))
+        .with_writer(std::io::stderr)
+        .finish()
+        .try_init()?;
 
     let seed_path = resolve_seed_path(dotenvy::var("SEED_PATH").ok().as_deref());
 
@@ -67,13 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // if there is no subcommand, run the daemon
         }
     }
-
-    // init logging
-    let log_filter = dotenvy::var("RUST_LOG").unwrap_or("wallet_daemon=info".to_string());
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(log_filter))
-        .finish()
-        .try_init()?;
 
     let key_pass = dotenvy::var("KEY_PASS").expect("KEY_PASS env var is required");
     let keypair = load_seed(seed_path, &key_pass, false);
@@ -120,16 +135,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     set_multitenant(keypair.clone()).await;
 
-    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(keypair.clone());
+    let transaction_trigger = WorkTrigger::new();
+    let wallet_trigger = WorkTrigger::new();
+    let pusher_status = PusherStatus::new();
 
-    let (wallet_poller, wallet_processor) = DeriveWalletJob::create_job(keypair);
+    let (matrix_tx_poller, matrix_tx_processor) = TransactionJob::create_job(
+        keypair.clone(),
+        transaction_trigger.clone(),
+        pusher_status.clone(),
+    );
 
-    tokio::select! {
-        _ = matrix_tx_poller.start() => {}
-        _ = matrix_tx_processor.start() => {}
-        _ = wallet_poller.start() => {}
-        _ = wallet_processor.start() => {}
+    let (wallet_poller, wallet_processor) =
+        DeriveWalletJob::create_job(keypair, wallet_trigger.clone(), pusher_status.clone());
+    let websocket = PusherConnection::from_env(transaction_trigger, wallet_trigger, pusher_status)?;
+
+    // Every one of these tasks is supposed to run for the life of the process.
+    // If any of them completes — returning, or panicking and resolving the
+    // `JoinHandle` to `Err(JoinError)` — the daemon has lost a component it
+    // cannot rebuild, and in-flight batches are gone. Exit non-zero so a
+    // supervisor (systemd `Restart=on-failure`, ECS, Docker) actually restarts
+    // it; returning `Ok(())` here would look like a clean shutdown and leave a
+    // dead signer in place.
+    let (task, result) = tokio::select! {
+        result = websocket.start() => ("pusher websocket", result),
+        result = matrix_tx_poller.start() => ("transaction poller", result),
+        result = matrix_tx_processor.start() => ("transaction processor", result),
+        result = wallet_poller.start() => ("managed-wallet poller", result),
+        result = wallet_processor.start() => ("managed-wallet processor", result),
+    };
+
+    match result {
+        Ok(()) => tracing::error!("The {task} task exited unexpectedly; shutting down"),
+        Err(error) => tracing::error!("The {task} task terminated abnormally: {error}"),
     }
 
-    Ok(())
+    exit(1);
 }
