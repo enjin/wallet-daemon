@@ -5199,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "wallet-daemon"
-version = "3.0.10"
+version = "3.0.11"
 dependencies = [
  "aes-gcm",
  "argon2",

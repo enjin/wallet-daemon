@@ -356,7 +356,6 @@ impl TransactionJob {
     }
 
     async fn start_polling(&self) -> Result<(), TickDispatchError> {
-        let mut no_transaction_count = 0;
         // Individual cursor pages are not authoritative: the same chain can
         // disappear on page 2 and return on page 3. Accumulate chains across
         // the full scan and only evict chains absent from the completed scan.
@@ -485,7 +484,6 @@ impl TransactionJob {
                                 requires_fresh_retry,
                             } => {
                                 if made_progress {
-                                    no_transaction_count = 0;
                                     unproductive_pages = 0;
                                     scan_retry
                                         .reset_failure_count_after_progress(&mut failure_count);
@@ -537,10 +535,7 @@ impl TransactionJob {
                     cursor = None;
                     unproductive_pages = 0;
                     if e.to_string() == NO_TRANSACTIONS_MSG {
-                        if no_transaction_count % 10 == 0 {
-                            tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
-                        }
-                        no_transaction_count += 1;
+                        tracing::info!("GetPendingTransactions: {}", NO_TRANSACTIONS_MSG,);
 
                         let idle = complete_chain_scan(
                             &mut previous_scan_chains,
