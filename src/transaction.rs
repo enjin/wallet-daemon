@@ -2,12 +2,10 @@ mod fuel_tank;
 
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{GetPendingTransactions, get_pending_transactions};
-use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
 use crate::work_trigger::{PusherAwarePoller, PusherStatus, WorkTrigger};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
-use parity_scale_codec::Encode;
 use payload::RawPayload;
 use std::collections::{HashMap, HashSet};
 use subxt::config::DefaultExtrinsicParamsBuilder;
@@ -951,40 +949,30 @@ impl TransactionProcessor {
                 // expiration block is needed for the signature
                 let expiration_block = block_number + TX_MORTALITY as u32;
 
-                // remove the last byte of the payload because it is the settings param, and we are
-                // replacing it
-                payload.pop();
-
-                // create message to be signed
-                let Ok(message) =
-                    fuel_tank::create_message(&payload, signer.public_key().0, expiration_block)
-                else {
+                let Some(chain_client) = global::substrate_client(network, chain).await else {
+                    tracing::error!("Missing substrate client for {network:?}/{chain:?}");
                     continue;
                 };
-
-                // sign by the fuel tank external id if it exists
-                let ft_signer = derive_signer(&keypair, fuel_tank_signer_external_id.as_deref());
-                let signature = sp_core::sr25519::Signature::from_raw(ft_signer.sign(&message).0);
-                tracing::info!(
-                    "fuel tanks - signed message {} with {} and got signature {}",
-                    hex::encode(&message),
-                    hex::encode(ft_signer.public_key().0),
-                    hex::encode(signature)
-                );
-
-                let settings = fuel_tank::DispatchSettings {
-                    signature: Some(ExpirableSignature {
-                        signature,
-                        expiry_block: expiration_block,
-                    }),
-                    ..Default::default()
+                let Ok(client_at_block) = chain_client.at_block(block_number) else {
+                    tracing::error!("Missing fuel tank metadata for {network:?}/{chain:?}");
+                    continue;
                 };
-
-                tracing::info!("payload before fuel tank: {}", hex::encode(&payload));
-
-                // append to the payload. This is fine because settings is the last param of the extrinsic
-                payload.extend_from_slice(&Some(settings).encode());
-                tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
+                let ft_signer = derive_signer(&keypair, fuel_tank_signer_external_id.as_deref());
+                tracing::debug!("payload before fuel tank: {}", hex::encode(&payload));
+                payload = match fuel_tank::sign_dispatch(
+                    &payload,
+                    client_at_block.metadata_ref(),
+                    signer.public_key().0,
+                    expiration_block,
+                    |message| ft_signer.sign(message).0,
+                ) {
+                    Ok(payload) => payload,
+                    Err(e) => {
+                        tracing::error!("Failed to sign fuel tank for request #{request_id}: {e}");
+                        continue;
+                    }
+                };
+                tracing::debug!("fuel tank modified payload: {}", hex::encode(&payload));
             }
 
             let dummy_tx = {
