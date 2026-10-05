@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -34,6 +34,8 @@ pub const REMARK_PAYLOAD: &str = "0x000000";
 /// A payload whose pallet/call indices do not exist in the metadata, so
 /// `RawPayload::from_bytes` fails and the request is skipped every time.
 pub const POISON_PAYLOAD: &str = "0xfefe00";
+/// The block the mock reports as current until a test moves it.
+pub const CURRENT_BLOCK: u32 = 1_000_000;
 
 /// One pending transaction the mock will hand out.
 #[derive(Clone)]
@@ -85,6 +87,9 @@ impl PendingTx {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SignBehaviour {
     Accept,
+    /// The mutation succeeds, but the platform's broadcast is then rejected,
+    /// so the extrinsics never land and the account nonce does not advance.
+    RejectAtBroadcast,
     /// Transport failure — the platform is down.
     HttpError,
 }
@@ -133,6 +138,10 @@ struct State {
     /// can hold the daemon in a steady state while pacing is measured.
     repeat_first_page: AtomicBool,
     nonce: AtomicUsize,
+    current_block: AtomicU32,
+    /// `uuid -> (fresh-scan page, current block)` to switch to once `uuid` is
+    /// signed.
+    after_signing: Mutex<HashMap<String, (Vec<PendingTx>, u32)>>,
 }
 
 impl MockPlatform {
@@ -156,6 +165,8 @@ impl MockPlatform {
             populate_behaviour: Mutex::new(PopulateBehaviour::Accept),
             repeat_first_page: AtomicBool::new(false),
             nonce: AtomicUsize::new(0),
+            current_block: AtomicU32::new(CURRENT_BLOCK),
+            after_signing: Mutex::new(HashMap::new()),
         });
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -215,6 +226,18 @@ impl MockPlatform {
 
     pub fn set_sign_behaviour(&self, behaviour: SignBehaviour) {
         *self.state.sign_behaviour.lock().unwrap() = behaviour;
+    }
+
+    /// Once `uuid` is signed, serve `rows` as the fresh-scan page and report
+    /// `block` as current. Switching both inside `SignTransactions` means the
+    /// daemon's next batch sees them together, however its polls line up with
+    /// the test.
+    pub fn after_signing(&self, uuid: &str, rows: Vec<PendingTx>, block: u32) {
+        self.state
+            .after_signing
+            .lock()
+            .unwrap()
+            .insert(uuid.to_string(), (rows, block));
     }
 
     pub fn set_populate_behaviour(&self, behaviour: PopulateBehaviour) {
@@ -307,7 +330,7 @@ async fn handle(
             200,
             json!({
                 "result": {
-                    "currentBlockNumber": 1_000_000,
+                    "currentBlockNumber": state.current_block.load(Ordering::SeqCst),
                     "currentBlockHash": format!("0x{}", "11".repeat(32)),
                     "specVersion": 1031,
                     "transactionVersion": 12,
@@ -388,11 +411,21 @@ async fn handle(
                 })
                 .unwrap_or_default();
 
-            match *state.sign_behaviour.lock().unwrap() {
-                SignBehaviour::Accept => {
-                    let count = uuids.len();
+            let behaviour = *state.sign_behaviour.lock().unwrap();
+            match behaviour {
+                SignBehaviour::Accept | SignBehaviour::RejectAtBroadcast => {
+                    for uuid in &uuids {
+                        let next = state.after_signing.lock().unwrap().remove(uuid);
+                        if let Some((rows, block)) = next {
+                            state.current_block.store(block, Ordering::SeqCst);
+                            let mut pages = state.tx_pages.lock().unwrap();
+                            pages.by_cursor.insert(String::new(), (rows, None));
+                        }
+                    }
+                    if behaviour == SignBehaviour::Accept {
+                        state.nonce.fetch_add(uuids.len(), Ordering::SeqCst);
+                    }
                     state.signed.lock().unwrap().extend(uuids);
-                    state.nonce.fetch_add(count, Ordering::SeqCst);
                     (200, json!({ "result": true }))
                 }
                 SignBehaviour::HttpError => (502, Value::Null),

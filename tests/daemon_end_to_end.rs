@@ -7,7 +7,7 @@
 mod support;
 
 use std::time::Duration;
-use support::{Daemon, MockPlatform, PendingTx, PopulateBehaviour, SignBehaviour};
+use support::{CURRENT_BLOCK, Daemon, MockPlatform, PendingTx, PopulateBehaviour, SignBehaviour};
 
 /// Generous, because a cold `cargo test` may still be linking the binary.
 const BOOT: Duration = Duration::from_secs(30);
@@ -253,6 +253,47 @@ async fn a_repeated_cursor_on_an_unsignable_page_does_not_trap_the_daemon() {
     assert!(
         lookups <= 12,
         "{lookups} lookups in 6s means the daemon is looping on a repeated cursor; logs:\n{}",
+        daemon.dump_logs()
+    );
+}
+
+#[tokio::test]
+async fn a_nonce_dropped_at_broadcast_is_reused_once_its_extrinsic_has_expired() {
+    // Canary Matrix, 2026-10-05: an extrinsic signed with nonce 0 was accepted
+    // by SignTransactions and then rejected at broadcast, so nonce 0 was never
+    // used. The daemon signed the wallet's next transaction with nonce 1 from
+    // its cache, and it waited behind the gap until the daemon restarted.
+    let platform = MockPlatform::start().await;
+    platform.set_sign_behaviour(SignBehaviour::RejectAtBroadcast);
+    platform.set_tx_page(None, vec![PendingTx::good("dropped")], None);
+    // While the dropped extrinsic could still land, Platform reporting nonce 0
+    // may only mean it has not counted it yet...
+    platform.after_signing("dropped", vec![PendingTx::good("stuck")], CURRENT_BLOCK);
+    // ...but long after its era has ended, it cannot have landed.
+    platform.after_signing(
+        "stuck",
+        vec![PendingTx::good("gap-filler")],
+        CURRENT_BLOCK + 1_000,
+    );
+
+    let daemon = Daemon::start(&platform);
+    // Each stage waits for the daemon's six-second fallback poll.
+    platform
+        .wait_for("the gap filler to be signed", BOOT * 2, |p| {
+            p.signed_uuids().iter().any(|uuid| uuid == "gap-filler")
+        })
+        .await;
+
+    for (uuid, nonce) in [("dropped", 0), ("stuck", 1), ("gap-filler", 0)] {
+        assert!(
+            daemon.log_contains(&format!("Signed #{uuid} nonce={nonce} ")),
+            "#{uuid} must be signed with nonce {nonce}; logs:\n{}",
+            daemon.dump_logs()
+        );
+    }
+    assert!(
+        daemon.log_contains("Reusing nonce 0 for #gap-filler"),
+        "reusing a nonce must be reported; logs:\n{}",
         daemon.dump_logs()
     );
 }

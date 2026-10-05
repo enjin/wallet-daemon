@@ -9,7 +9,7 @@ use crate::work_trigger::{PusherAwarePoller, PusherStatus, WorkTrigger};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
 use parity_scale_codec::Encode;
 use payload::RawPayload;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use subxt::config::DefaultExtrinsicParamsBuilder;
 use subxt::utils::H256;
 use subxt_signer::DeriveJunction;
@@ -740,6 +740,86 @@ impl TransactionJob {
     }
 }
 
+/// Blocks from the start of an extrinsic's mortal era until its nonce may be
+/// signed with again: the era itself (`mortal_from_unchecked` rounds the
+/// period up to a power of two), plus a margin because GetAccountNonce can
+/// trail the block number Platform reports, so an extrinsic that landed at
+/// the very end of its era needs a moment to show up in it.
+const NONCE_REUSE_AFTER: u32 = TX_MORTALITY.next_power_of_two() as u32 + 16;
+
+/// Next-nonce bookkeeping for one `(network, chain, signer)`.
+///
+/// Platform's nonce trailing ours is ambiguous: either Platform has not
+/// counted what we submitted yet, or something we submitted will never land
+/// (it was rejected at broadcast, say). Every extrinsic we sign is mortal,
+/// which settles it: a nonce Platform still reports once the extrinsic signed
+/// with it has expired was never used, and every later nonce waits behind it
+/// until something is signed with it again.
+///
+/// The abandon extrinsic shares the nonce but lives for `DUMMY_TX_MORTALITY`.
+/// If Platform broadcasts it after the nonce has been reused, one of the two
+/// fails rather than the account being stuck.
+#[derive(Debug)]
+struct NonceSlot {
+    /// One past the highest nonce signed or reported by Platform.
+    next: u64,
+    /// Platform's nonce as of the latest refresh.
+    platform: u64,
+    /// Where the era of each nonce signed in the last `NONCE_REUSE_AFTER`
+    /// blocks starts.
+    signed_at: BTreeMap<u64, u32>,
+    /// When `next` was last taken from Platform. A nonce below `next` with no
+    /// entry in `signed_at` was signed before this block, or has expired.
+    seeded_at: u32,
+}
+
+impl NonceSlot {
+    fn new(platform_nonce: u64, block: u32) -> Self {
+        Self {
+            next: platform_nonce,
+            platform: platform_nonce,
+            signed_at: BTreeMap::new(),
+            seeded_at: block,
+        }
+    }
+
+    /// Whether, at `block`, an extrinsic whose era starts at `era_start` can
+    /// no longer land, or show up in GetAccountNonce if it already has.
+    fn expired(era_start: u32, block: u32) -> bool {
+        block >= era_start.saturating_add(NONCE_REUSE_AFTER)
+    }
+
+    /// Fold in Platform's nonce for this batch. Returns the previous `next`
+    /// when Platform is ahead of it.
+    fn refresh(&mut self, platform_nonce: u64, block: u32) -> Option<u64> {
+        self.platform = platform_nonce;
+        self.signed_at
+            .retain(|_, era_start| !Self::expired(*era_start, block));
+        if platform_nonce <= self.next {
+            return None;
+        }
+        self.seeded_at = block;
+        Some(std::mem::replace(&mut self.next, platform_nonce))
+    }
+
+    /// The nonce to sign with at `block`: the lowest one from Platform's
+    /// onwards whose extrinsic expired without landing, or else `next`.
+    fn next_nonce(&self, block: u32) -> u64 {
+        (self.platform..self.next)
+            .find(|nonce| {
+                let era_start = self.signed_at.get(nonce).copied();
+                Self::expired(era_start.unwrap_or(self.seeded_at), block)
+            })
+            .unwrap_or(self.next)
+    }
+
+    /// Record that `nonce` was signed with an era starting at `block`.
+    fn commit(&mut self, nonce: u64, block: u32) {
+        self.signed_at.insert(nonce, block);
+        self.next = self.next.max(nonce + 1);
+    }
+}
+
 pub struct TransactionProcessor {
     keypair: Keypair,
     receiver: Receiver<ProcessorTick>,
@@ -747,7 +827,7 @@ pub struct TransactionProcessor {
     /// the next nonce to use for that triple. Survives across batches so that
     /// back-to-back cursor pages stay in sync; entries are evicted when an
     /// authoritative lookup reports that their chain is idle.
-    nonces: HashMap<NonceKey, u64>,
+    nonces: HashMap<NonceKey, NonceSlot>,
 }
 
 impl TransactionProcessor {
@@ -761,7 +841,7 @@ impl TransactionProcessor {
 
     async fn transaction_handler(
         keypair: Keypair,
-        nonces: &mut HashMap<NonceKey, u64>,
+        nonces: &mut HashMap<NonceKey, NonceSlot>,
         requests: Vec<TransactionRequest>,
     ) -> BatchOutcome {
         // Derive the signer for every request up-front so we can both
@@ -831,7 +911,9 @@ impl TransactionProcessor {
         //
         //   * If `slot >= platform_nonce`, the cache is preserved. This is
         //     the common cursor-pagination case: our previous page advanced
-        //     the slot and it remains the right next nonce to use.
+        //     the slot and it remains the right next nonce to use. The
+        //     exception is a nonce whose extrinsic expired without landing,
+        //     which `NonceSlot::next_nonce` hands out again.
         //
         //   * If `slot < platform_nonce`, the chain or Platform's submitted
         //     transaction lookback has moved forward, so the cache is rebased
@@ -844,9 +926,10 @@ impl TransactionProcessor {
         for (signer, request) in signers.iter().zip(requests.iter()) {
             // Don't bother fetching a nonce for a chain that already failed
             // its block / metadata prefetch.
-            if failed_chains.contains(&(request.network, request.chain)) {
+            let Some(&(block_number, _, _)) = block_info.get(&(request.network, request.chain))
+            else {
                 continue;
-            }
+            };
             let key: NonceKey = (request.network, request.chain, signer.public_key().0);
             if refreshed_keys.contains(&key) || failed_keys.contains(&key) {
                 continue;
@@ -859,10 +942,10 @@ impl TransactionProcessor {
             .await
             {
                 Ok(platform_nonce) => {
-                    let slot = nonces.entry(key).or_insert(platform_nonce);
-                    if *slot < platform_nonce {
-                        let was = *slot;
-                        *slot = platform_nonce;
+                    let slot = nonces
+                        .entry(key)
+                        .or_insert_with(|| NonceSlot::new(platform_nonce, block_number));
+                    if let Some(was) = slot.refresh(platform_nonce, block_number) {
                         tracing::info!(
                             "Detected Platform-corrected nonce advance for account 0x{} - Network: {:?} - Chain: {:?}; rebasing cache from {was} to {platform_nonce}",
                             hex::encode(key.2),
@@ -870,7 +953,7 @@ impl TransactionProcessor {
                             request.chain,
                         );
                     } else {
-                        let cached = *slot;
+                        let cached = slot.next;
                         tracing::debug!(
                             "Refreshed nonce: cache={cached} platform={platform_nonce} for account 0x{} - Network: {:?} - Chain: {:?}",
                             hex::encode(key.2),
@@ -945,7 +1028,15 @@ impl TransactionProcessor {
                 );
                 continue;
             };
-            let correct_nonce = *nonce_slot;
+            let correct_nonce = nonce_slot.next_nonce(block_number);
+            if correct_nonce < nonce_slot.next {
+                tracing::warn!(
+                    "Reusing nonce {correct_nonce} for #{request_id} account=0x{} network={network:?} chain={chain:?}: its extrinsic expired without landing (cache={} platform={})",
+                    hex::encode(pubkey_bytes),
+                    nonce_slot.next,
+                    nonce_slot.platform,
+                );
+            }
 
             if let Some(fuel_tank_signer_external_id) = fuel_tank_signer_external_id {
                 // expiration block is needed for the signature
@@ -1089,7 +1180,7 @@ impl TransactionProcessor {
             // built, signed, and queued for submission. Track the
             // `NonceKey` so we can roll back the in-memory counter if the
             // batch's `SignTransactions` mutation ultimately fails.
-            *nonce_slot += 1;
+            nonce_slot.commit(correct_nonce, block_number);
             committed_keys.insert(nonce_key);
         }
 
@@ -1195,7 +1286,7 @@ fn derive_signer(keypair: &Keypair, external_id: Option<&str>) -> Keypair {
 
 /// Drop every nonce-cache entry whose `(network, chain)` is idle. The next
 /// batch for that chain seeds its counter from GetAccountNonce.
-fn evict_idle_chains(nonces: &mut HashMap<NonceKey, u64>, idle: &HashSet<ChainKey>) -> usize {
+fn evict_idle_chains<V>(nonces: &mut HashMap<NonceKey, V>, idle: &HashSet<ChainKey>) -> usize {
     let before = nonces.len();
     nonces.retain(|(net, chain, _), _| !idle.contains(&(*net, *chain)));
     before - nonces.len()
@@ -1210,7 +1301,7 @@ fn evict_idle_chains(nonces: &mut HashMap<NonceKey, u64>, idle: &HashSet<ChainKe
 /// uncommitted nonces and must be discarded so the next batch re-reads the
 /// Platform-corrected nonce and re-signs the same uuids at the correct values.
 /// Returns the number of entries actually evicted.
-fn evict_nonce_keys(nonces: &mut HashMap<NonceKey, u64>, keys: &HashSet<NonceKey>) -> usize {
+fn evict_nonce_keys<V>(nonces: &mut HashMap<NonceKey, V>, keys: &HashSet<NonceKey>) -> usize {
     let before = nonces.len();
     nonces.retain(|k, _| !keys.contains(k));
     before - nonces.len()
@@ -1471,69 +1562,94 @@ mod tests {
         assert_eq!(nonces[&key], 12);
     }
 
+    /// Canary Matrix, 2026-10-05: a managed wallet's nonce-0 extrinsic was
+    /// accepted by `SignTransactions` and then rejected at broadcast, so
+    /// nonce 0 was never used. Platform kept reporting 0 while the cache
+    /// handed out 1 and up, each waiting behind the gap until a restart. Once
+    /// the dropped extrinsic has expired its nonce must be reused, without
+    /// colliding with a later extrinsic that can still land.
+    #[test]
+    fn a_nonce_whose_extrinsic_expired_without_landing_is_reused() {
+        let signed = 1_000_000;
+        let mut slot = NonceSlot::new(0, signed);
+        assert_eq!(slot.next_nonce(signed), 0);
+        slot.commit(0, signed);
+
+        // While nonce 0's extrinsic can still land, Platform reporting 0 may
+        // only mean it has not counted it yet, so the next transaction gets 1.
+        let soon_after = signed + 10;
+        slot.refresh(0, soon_after);
+        assert_eq!(slot.next_nonce(soon_after), 1);
+        slot.commit(1, soon_after);
+
+        let just_before = signed + NONCE_REUSE_AFTER - 1;
+        slot.refresh(0, just_before);
+        assert_eq!(slot.next_nonce(just_before), 2);
+
+        // Once it cannot, nonce 0 is signed with again, which lets the
+        // extrinsic holding nonce 1 through...
+        let expired = signed + NONCE_REUSE_AFTER;
+        slot.refresh(0, expired);
+        assert_eq!(slot.next_nonce(expired), 0);
+        slot.commit(0, expired);
+
+        // ...so nonce 1 is left alone while that extrinsic can still land.
+        assert_eq!(slot.next_nonce(expired), 2);
+    }
+
+    /// Nonces below the seed were claimed by extrinsics signed before it, for
+    /// example by the process that ran before a restart. If Platform later
+    /// drops them, they are reused once those extrinsics have expired too.
+    #[test]
+    fn nonces_claimed_before_the_seed_are_reused_once_expired() {
+        let seeded = 1_000_000;
+        let mut slot = NonceSlot::new(5, seeded);
+
+        slot.refresh(3, seeded + 1);
+        assert_eq!(slot.next_nonce(seeded + 1), 5);
+
+        slot.refresh(3, seeded + NONCE_REUSE_AFTER);
+        assert_eq!(slot.next_nonce(seeded + NONCE_REUSE_AFTER), 3);
+    }
+
     /// Cross-batch carry-over: when Platform's corrected nonce has not yet
     /// caught up to our previously signed extrinsics, the cached slot must be
     /// preserved across batches. This is the common case for back-to-back
     /// pages against the same `(network, chain, signer)`.
-    ///
-    /// Mirrors the `max(slot, platform_nonce)` rebase in
-    /// `transaction_handler`'s seed loop: when `slot >= platform_nonce`,
-    /// the slot is unchanged.
     #[test]
     fn cache_carry_over_preserves_slot_when_platform_nonce_is_behind() {
-        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
-        let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
-
         // End-of-page-1 state: 25 txs signed starting at nonce 21, so the
         // slot now holds 46. Platform's corrected value still reports 21.
-        nonces.insert(key, 46);
-        let platform_nonce: u64 = 21;
-
-        // Apply the same rebase rule as the production seed loop:
-        // `slot = max(slot, platform_nonce)`. When Platform is behind us,
-        // the slot must remain at 46.
-        let slot = nonces.get_mut(&key).unwrap();
-        if *slot < platform_nonce {
-            *slot = platform_nonce;
+        let block = 1_000_000;
+        let mut slot = NonceSlot::new(21, block);
+        for nonce in 21..46 {
+            slot.commit(nonce, block);
         }
-        assert_eq!(
-            *slot, 46,
-            "slot must be preserved when chain is behind the cache"
-        );
 
-        // The next signed tx must therefore use 46, not 21.
-        *slot += 1;
-        assert_eq!(nonces[&key], 47);
+        // Page 2: every extrinsic from page 1 can still land, so the next
+        // signed tx must use 46, not 21.
+        assert_eq!(slot.refresh(21, block + 1), None);
+        assert_eq!(
+            slot.next_nonce(block + 1),
+            46,
+            "slot must be preserved when Platform is behind the cache"
+        );
     }
 
     /// Corrected advance: when Platform's nonce has moved past the cached slot
     /// because either chain state or recently submitted extrinsics advanced,
     /// the cache must be rebased before signing.
-    ///
-    /// Mirrors the `max(slot, platform_nonce)` rebase in
-    /// `transaction_handler`'s seed loop: when `slot < platform_nonce`,
-    /// the slot is bumped up.
     #[test]
     fn cache_rebases_when_platform_corrected_nonce_advances() {
-        let mut nonces: HashMap<NonceKey, u64> = HashMap::new();
-        let key: NonceKey = (Network::Enjin, Chain::Matrix, [0u8; 32]);
-
         // Cache says next nonce is 30, while Platform now reports 35.
-        nonces.insert(key, 30);
-        let platform_nonce: u64 = 35;
+        let mut slot = NonceSlot::new(30, 1_000_000);
 
-        let slot = nonces.get_mut(&key).unwrap();
-        if *slot < platform_nonce {
-            *slot = platform_nonce;
-        }
+        assert_eq!(slot.refresh(35, 1_000_001), Some(30));
         assert_eq!(
-            *slot, 35,
+            slot.next_nonce(1_000_001),
+            35,
             "slot must be rebased when Platform has advanced past the cache"
         );
-
-        // The next signed tx must therefore use 35, not 30.
-        *slot += 1;
-        assert_eq!(nonces[&key], 36);
     }
 
     /// Reset-on-idle: when an authoritative lookup no longer returns a chain,
