@@ -128,11 +128,11 @@ mod tests {
     );
 
     // Upgrade fixtures captured from finalized blocks on 2026-10-05:
-    // rpc.matrix.canary.enjin.io, spec 1041:
+    // canary-matrixchain, spec 1041:
     // 0x2dcde497d568733a453905ac647ddd390c56634326783892217897d2d9246d37
-    // rpc.relay.canary.enjin.io, spec 1080:
+    // canary-relaychain, spec 1080:
     // 0x5da76a82a3e26e4449cefc0b65b33cd8b6f5a4ef640c780a53e6bbb28dd5e4ff
-    // rpc.relay.blockchain.enjin.io, spec 1070:
+    // enjin-relaychain, spec 1070:
     // 0x6dafad750837d255689eb7cf358ec1622c0d803a429d27a76650ed231356840e
     fn metadata(name: &str) -> Metadata {
         let bytes = std::fs::read(format!(
