@@ -6,8 +6,14 @@
 
 mod support;
 
+use schnorrkel::derive::{ChainCode, Derivation};
 use std::time::Duration;
-use support::{Daemon, MockPlatform, PendingTx, PopulateBehaviour, SignBehaviour};
+use subxt::ext::frame_decode::extrinsics::decode_extrinsic;
+use subxt_signer::sr25519;
+use support::{
+    CURRENT_BLOCK, Daemon, FUEL_TANK_INNER_CALL, MockPlatform, PendingTx, PopulateBehaviour,
+    SignBehaviour,
+};
 
 /// Generous, because a cold `cargo test` may still be linking the binary.
 const BOOT: Duration = Duration::from_secs(30);
@@ -31,6 +37,94 @@ async fn the_daemon_signs_a_pending_transaction_end_to_end() {
         platform.signed_uuids(),
         vec!["tx-1".to_string()],
         "logs:\n{}",
+        daemon.dump_logs()
+    );
+}
+
+/// The public key of the managed wallet `external_id` of the daemon whose own
+/// key is `root`: the daemon soft-derives it from the id's SCALE encoding.
+fn managed_wallet(root: [u8; 32], external_id: i64) -> [u8; 32] {
+    let mut chain_code = [0; 32];
+    chain_code[..8].copy_from_slice(&external_id.to_le_bytes());
+    schnorrkel::PublicKey::from_bytes(&root)
+        .unwrap()
+        .derived_key_simple(ChainCode(chain_code), [])
+        .0
+        .to_bytes()
+}
+
+#[tokio::test]
+async fn a_fuel_tank_dispatch_is_signed_for_its_caller_by_the_fuel_tank_wallet() {
+    // A fuel tank's RequireSignature rule checks a signature over the inner
+    // call, the account dispatching it and an expiry block. The dispatching
+    // account is the wallet signing the extrinsic, the signature comes from
+    // another wallet, and both are derived from the daemon's key; so this
+    // pins down which key plays which role.
+    let platform = MockPlatform::start().await;
+    platform.set_tx_page(
+        None,
+        vec![PendingTx::fuel_tank("ft-1", "42", Some("7"))],
+        None,
+    );
+
+    let daemon = Daemon::start(&platform);
+    platform
+        .wait_for("the fuel tank dispatch to be signed", BOOT, |p| {
+            p.signed_extrinsic("ft-1").is_some()
+        })
+        .await;
+
+    let root = platform.daemon_public_key().unwrap();
+    let caller = managed_wallet(root, 42);
+    let fuel_tank_wallet = managed_wallet(root, 7);
+    let extrinsic = platform.signed_extrinsic("ft-1").unwrap();
+    let extrinsic = hex::decode(extrinsic.trim_start_matches("0x")).unwrap();
+    let metadata = support::metadata();
+    let decoded = decode_extrinsic(&mut &extrinsic[..], &metadata, metadata.types())
+        .unwrap_or_else(|e| {
+            panic!(
+                "undecodable extrinsic: {e:?}; logs:\n{}",
+                daemon.dump_logs()
+            )
+        });
+    assert_eq!(decoded.pallet_name(), "FuelTanks");
+    assert_eq!(decoded.call_name(), "dispatch");
+    let address = &extrinsic[decoded.signature_payload().unwrap().address_range()];
+    assert_eq!(
+        address,
+        [&[0][..], &caller].concat(),
+        "MultiAddress::Id of wallet 42"
+    );
+    let argument = |name: &str| {
+        let argument = decoded.call_data().find(|a| a.name() == name).unwrap();
+        &extrinsic[argument.range()]
+    };
+    assert_eq!(argument("call"), FUEL_TANK_INNER_CALL);
+
+    // Some(settings) { use_none_origin, pays_remaining_fee, Some(signature) { .., expiry } }
+    let settings = argument("settings");
+    assert_eq!(settings.len(), 72, "settings: {}", hex::encode(settings));
+    assert_eq!(settings[..4], [1, 0, 0, 1]);
+    let signature = sr25519::Signature(settings[4..68].try_into().unwrap());
+    let expiry = u32::from_le_bytes(settings[68..].try_into().unwrap());
+    assert_eq!(
+        expiry,
+        CURRENT_BLOCK + 64,
+        "the signature outlives the extrinsic's mortality"
+    );
+    let message = [&FUEL_TANK_INNER_CALL[..], &caller, &expiry.to_le_bytes()].concat();
+    assert!(
+        sr25519::verify(&signature, &message, &sr25519::PublicKey(fuel_tank_wallet)),
+        "the fuel tank signature must be wallet 7's, over the call, wallet 42 and the expiry; logs:\n{}",
+        daemon.dump_logs()
+    );
+    assert!(
+        daemon.log_contains(&format!(
+            "Signed fuel tank dispatch #ft-1 with fuel tank signer 0x{} for caller 0x{}, expiring at block {expiry}",
+            hex::encode(fuel_tank_wallet),
+            hex::encode(caller),
+        )),
+        "the signing must be reported with both wallets; logs:\n{}",
         daemon.dump_logs()
     );
 }

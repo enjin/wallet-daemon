@@ -34,37 +34,68 @@ pub const REMARK_PAYLOAD: &str = "0x000000";
 /// A payload whose pallet/call indices do not exist in the metadata, so
 /// `RawPayload::from_bytes` fails and the request is skipped every time.
 pub const POISON_PAYLOAD: &str = "0xfefe00";
+/// `FuelTanks.dispatch` in the bundled canary metadata (pallet 54, call 5):
+/// tank `MultiAddress::Id(0x09..)`, rule set 1, `FUEL_TANK_INNER_CALL`, and
+/// no settings, which the daemon replaces with a signature.
+pub const FUEL_TANK_PAYLOAD: &str = concat!(
+    "0x360500",
+    "0909090909090909090909090909090909090909090909090909090909090909",
+    "01000000",
+    "0000042a",
+    "00",
+);
+/// The call inside `FUEL_TANK_PAYLOAD`: `System.remark(0x2a)`.
+pub const FUEL_TANK_INNER_CALL: [u8; 4] = [0, 0, 4, 0x2a];
+/// The block the mock reports as current.
+pub const CURRENT_BLOCK: u32 = 1_000_000;
 
 /// One pending transaction the mock will hand out.
 #[derive(Clone)]
 pub struct PendingTx {
     pub uuid: String,
     pub encoded_data: String,
+    /// The managed wallet that signs the extrinsic; `None` is the daemon's own
+    /// wallet.
+    pub wallet_external_id: Option<String>,
+    /// `Some` when the call needs a fuel tank signature, from the managed
+    /// wallet inside (`None` inside being the daemon's own wallet again).
+    pub fuel_tank_signer_external_id: Option<Option<String>>,
 }
 
 impl PendingTx {
     pub fn good(uuid: &str) -> Self {
-        Self {
-            uuid: uuid.to_string(),
-            encoded_data: REMARK_PAYLOAD.to_string(),
-        }
+        Self::with_payload(uuid, REMARK_PAYLOAD)
     }
 
     /// A row that can be fetched and converted but never signed.
     pub fn poison(uuid: &str) -> Self {
-        Self {
-            uuid: uuid.to_string(),
-            encoded_data: POISON_PAYLOAD.to_string(),
-        }
+        Self::with_payload(uuid, POISON_PAYLOAD)
     }
 
     /// A row that fails `TryFrom` outright, so the page arrives empty after
     /// filtering even though the platform said it had data.
     pub fn unconvertible(uuid: &str) -> Self {
+        // No "0x", so the payload cannot be decoded at all.
+        Self::with_payload(uuid, "not-a-payload")
+    }
+
+    /// A `FuelTanks.dispatch` that managed wallet `wallet` dispatches, with a
+    /// fuel tank signature from managed wallet `fuel_tank_signer` (`None` for
+    /// the daemon's own wallet).
+    pub fn fuel_tank(uuid: &str, wallet: &str, fuel_tank_signer: Option<&str>) -> Self {
+        Self {
+            wallet_external_id: Some(wallet.to_string()),
+            fuel_tank_signer_external_id: Some(fuel_tank_signer.map(str::to_string)),
+            ..Self::with_payload(uuid, FUEL_TANK_PAYLOAD)
+        }
+    }
+
+    fn with_payload(uuid: &str, encoded_data: &str) -> Self {
         Self {
             uuid: uuid.to_string(),
-            // No "0x", so the payload cannot be decoded at all.
-            encoded_data: "not-a-payload".to_string(),
+            encoded_data: encoded_data.to_string(),
+            wallet_external_id: None,
+            fuel_tank_signer_external_id: None,
         }
     }
 
@@ -72,11 +103,11 @@ impl PendingTx {
         json!({
             "uuid": self.uuid,
             "encodedData": self.encoded_data,
-            "wallet": { "publicKey": null, "externalId": null },
+            "wallet": { "publicKey": null, "externalId": self.wallet_external_id },
             "network": "CANARY",
             "chain": "MATRIX",
-            "shouldSignFuelTank": false,
-            "fuelTankSignerExternalId": null,
+            "shouldSignFuelTank": self.fuel_tank_signer_external_id.is_some(),
+            "fuelTankSignerExternalId": self.fuel_tank_signer_external_id.clone().flatten(),
         })
     }
 }
@@ -125,6 +156,8 @@ struct State {
     calls: Mutex<Vec<Call>>,
     /// Every uuid handed to `SignTransactions`, in order, across all calls.
     signed: Mutex<Vec<String>>,
+    /// The accepted `signedExtrinsic` of each uuid.
+    signed_extrinsics: Mutex<HashMap<String, String>>,
     tx_pages: Mutex<Pages>,
     wallet_pages: Mutex<HashMap<String, Page<String>>>,
     sign_behaviour: Mutex<SignBehaviour>,
@@ -137,19 +170,15 @@ struct State {
 
 impl MockPlatform {
     pub async fn start() -> Self {
-        let metadata_path = format!(
-            "{}/tests/fixtures/canary_matrix_metadata.scale",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let raw = std::fs::read(&metadata_path).expect("metadata fixture missing");
         // The daemon decodes this field as `Option<Vec<u8>>`, so wrap it.
-        let metadata_hex = format!("0x{}", hex::encode(Some(raw).encode()));
+        let metadata_hex = format!("0x{}", hex::encode(Some(metadata_bytes()).encode()));
 
         let state = Arc::new(State {
             metadata_hex,
             started: Instant::now(),
             calls: Mutex::new(Vec::new()),
             signed: Mutex::new(Vec::new()),
+            signed_extrinsics: Mutex::new(HashMap::new()),
             tx_pages: Mutex::new(Pages::default()),
             wallet_pages: Mutex::new(HashMap::new()),
             sign_behaviour: Mutex::new(SignBehaviour::Accept),
@@ -231,6 +260,26 @@ impl MockPlatform {
         self.state.signed.lock().unwrap().clone()
     }
 
+    /// The hex `signedExtrinsic` accepted for `uuid`, if it has been signed.
+    pub fn signed_extrinsic(&self, uuid: &str) -> Option<String> {
+        self.state
+            .signed_extrinsics
+            .lock()
+            .unwrap()
+            .get(uuid)
+            .cloned()
+    }
+
+    /// The daemon's own public key, as it registered it on startup.
+    pub fn daemon_public_key(&self) -> Option<[u8; 32]> {
+        let call = self.calls_to("SetDaemonWalletAccount").into_iter().next()?;
+        let hex = call.variables.get("publicKey")?.as_str()?;
+        hex::decode(hex.trim_start_matches("0x"))
+            .ok()?
+            .try_into()
+            .ok()
+    }
+
     pub fn calls(&self) -> Vec<Call> {
         self.state.calls.lock().unwrap().clone()
     }
@@ -265,6 +314,19 @@ impl MockPlatform {
         let counts = summarise(&self.calls());
         panic!("timed out after {timeout:?} waiting for {what}; calls so far: {counts}");
     }
+}
+
+fn metadata_bytes() -> Vec<u8> {
+    let path = format!(
+        "{}/tests/fixtures/canary_matrix_metadata.scale",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read(&path).expect("metadata fixture missing")
+}
+
+/// The metadata the mock serves, for decoding what the daemon submits.
+pub fn metadata() -> subxt::Metadata {
+    subxt::Metadata::decode_from(&metadata_bytes()).expect("decode metadata")
 }
 
 fn summarise(calls: &[Call]) -> String {
@@ -307,7 +369,7 @@ async fn handle(
             200,
             json!({
                 "result": {
-                    "currentBlockNumber": 1_000_000,
+                    "currentBlockNumber": CURRENT_BLOCK,
                     "currentBlockHash": format!("0x{}", "11".repeat(32)),
                     "specVersion": 1031,
                     "transactionVersion": 12,
@@ -377,21 +439,29 @@ async fn handle(
             }
         }
         "SignTransactions" => {
-            let uuids: Vec<String> = variables
+            let transactions: Vec<(String, String)> = variables
                 .get("transactions")
                 .and_then(Value::as_array)
                 .map(|txs| {
                     txs.iter()
-                        .filter_map(|tx| tx.get("uuid").and_then(Value::as_str))
-                        .map(str::to_string)
+                        .filter_map(|tx| {
+                            let uuid = tx.get("uuid")?.as_str()?;
+                            let extrinsic = tx.get("signedExtrinsic")?.as_str()?;
+                            Some((uuid.to_string(), extrinsic.to_string()))
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
 
             match *state.sign_behaviour.lock().unwrap() {
                 SignBehaviour::Accept => {
-                    let count = uuids.len();
-                    state.signed.lock().unwrap().extend(uuids);
+                    let count = transactions.len();
+                    let mut signed = state.signed.lock().unwrap();
+                    let mut extrinsics = state.signed_extrinsics.lock().unwrap();
+                    for (uuid, extrinsic) in transactions {
+                        signed.push(uuid.clone());
+                        extrinsics.insert(uuid, extrinsic);
+                    }
                     state.nonce.fetch_add(count, Ordering::SeqCst);
                     (200, json!({ "result": true }))
                 }

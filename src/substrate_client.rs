@@ -46,7 +46,7 @@ impl Config for EnjinConfig {
 
 /// End-to-end signature verification.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chain_info::get_genesis_hash;
     use crate::transaction::payload::{RawFields, RawPayload};
@@ -76,7 +76,8 @@ mod tests {
     const SPEC_VERSION: u32 = 1031;
     const TX_VERSION: u32 = 12;
 
-    fn load_metadata_from(filename: &str) -> Arc<Metadata> {
+    /// Load a metadata fixture from `tests/fixtures`.
+    pub(crate) fn load_metadata_from(filename: &str) -> Arc<Metadata> {
         let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), filename);
         let bytes = std::fs::read(&path).expect("metadata fixture missing");
         Arc::new(Metadata::decode_from(&bytes).expect("decode metadata"))
