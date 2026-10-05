@@ -14,7 +14,8 @@ use subxt::ext::scale_value::{Composite, Primitive, Value, ValueDef, scale};
 const MAX_NESTING: usize = 128;
 
 /// The runtime reads `None` settings as the default, whose fields are all false or `None`: the
-/// same as `Some` followed by zeroes.
+/// same as `Some` followed by zeroes. Each bool or option takes one byte of them, so only settings
+/// with a field that has no known default anyway can run out.
 const DEFAULT_SETTINGS: [u8; 256] = {
     let mut bytes = [0; 256];
     bytes[0] = 1;
@@ -110,12 +111,12 @@ fn dispatch_settings(
     let decode = |mut bytes: &[u8]| {
         scale::decode_as_type(&mut bytes, settings_type, metadata.types())
             .map(Value::remove_context)
-            .map_err(|e| format!("decoding fuel tank settings: {e}"))
     };
-    let mut settings = decode(encoded)?;
+    let mut settings = decode(encoded).map_err(|e| format!("decoding fuel tank settings: {e}"))?;
     let is_default = matches!(&settings.value, ValueDef::Variant(option) if option.name == "None");
     if is_default {
-        settings = decode(&DEFAULT_SETTINGS)?;
+        settings = decode(&DEFAULT_SETTINGS)
+            .map_err(|e| format!("dispatch settings have no known default: {e}"))?;
     }
     if let ValueDef::Variant(option) = settings.value
         && option.name == "Some"
@@ -196,6 +197,23 @@ impl fmt::Display for MeasureError {
     }
 }
 
+/// Visit each item of a container one level deeper, so that a length longer than the data runs
+/// out of input rather than allocating.
+macro_rules! visit_items {
+    ($($method:ident($container:ident)),* $(,)?) => {$(
+        fn $method<'scale, 'resolver>(
+            self,
+            value: &mut types::$container<'scale, 'resolver, R>,
+            _: TypeIdFor<Self>,
+        ) -> Result<Self::Value<'scale, 'resolver>, Self::Error> {
+            while let Some(item) = value.decode_item(self.nested()) {
+                item?;
+            }
+            Ok(())
+        }
+    )*};
+}
+
 impl<R: TypeResolver> Visitor for Measure<R> {
     type Value<'scale, 'resolver> = ();
     type Error = MeasureError;
@@ -224,38 +242,11 @@ impl<R: TypeResolver> Visitor for Measure<R> {
         Ok(())
     }
 
-    fn visit_sequence<'scale, 'resolver>(
-        self,
-        value: &mut types::Sequence<'scale, 'resolver, R>,
-        _: TypeIdFor<Self>,
-    ) -> Result<Self::Value<'scale, 'resolver>, Self::Error> {
-        // A length longer than the data runs out of input, as nothing is allocated for it.
-        while let Some(item) = value.decode_item(self.nested()) {
-            item?;
-        }
-        Ok(())
-    }
-
-    fn visit_composite<'scale, 'resolver>(
-        self,
-        value: &mut types::Composite<'scale, 'resolver, R>,
-        _: TypeIdFor<Self>,
-    ) -> Result<Self::Value<'scale, 'resolver>, Self::Error> {
-        while let Some(field) = value.decode_item(self.nested()) {
-            field?;
-        }
-        Ok(())
-    }
-
-    fn visit_tuple<'scale, 'resolver>(
-        self,
-        value: &mut types::Tuple<'scale, 'resolver, R>,
-        _: TypeIdFor<Self>,
-    ) -> Result<Self::Value<'scale, 'resolver>, Self::Error> {
-        while let Some(field) = value.decode_item(self.nested()) {
-            field?;
-        }
-        Ok(())
+    visit_items! {
+        visit_sequence(Sequence),
+        visit_composite(Composite),
+        visit_tuple(Tuple),
+        visit_array(Array),
     }
 
     fn visit_variant<'scale, 'resolver>(
@@ -269,23 +260,12 @@ impl<R: TypeResolver> Visitor for Measure<R> {
         }
         Ok(())
     }
-
-    fn visit_array<'scale, 'resolver>(
-        self,
-        value: &mut types::Array<'scale, 'resolver, R>,
-        _: TypeIdFor<Self>,
-    ) -> Result<Self::Value<'scale, 'resolver>, Self::Error> {
-        while let Some(item) = value.decode_item(self.nested()) {
-            item?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::substrate_client::tests::load_metadata_from;
+    use crate::test_fixtures::load_metadata_from;
     use hex_literal::hex;
     use parity_scale_codec::{Compact, Decode, Encode};
     use scale_info::form::PortableForm;

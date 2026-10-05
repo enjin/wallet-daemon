@@ -46,9 +46,10 @@ impl Config for EnjinConfig {
 
 /// End-to-end signature verification.
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::chain_info::get_genesis_hash;
+    use crate::test_fixtures::load_metadata_from;
     use crate::transaction::payload::{RawFields, RawPayload};
     use crate::types::{Chain, Network};
     use parity_scale_codec::{Compact, Encode};
@@ -75,13 +76,6 @@ pub(crate) mod tests {
     // spec_version / transaction_version).
     const SPEC_VERSION: u32 = 1031;
     const TX_VERSION: u32 = 12;
-
-    /// Load a metadata fixture from `tests/fixtures`.
-    pub(crate) fn load_metadata_from(filename: &str) -> Arc<Metadata> {
-        let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), filename);
-        let bytes = std::fs::read(&path).expect("metadata fixture missing");
-        Arc::new(Metadata::decode_from(&bytes).expect("decode metadata"))
-    }
 
     fn load_enjin_matrix_v14_metadata() -> Arc<Metadata> {
         load_metadata_from("enjin_matrix_metadata.scale")

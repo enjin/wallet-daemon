@@ -4,7 +4,6 @@ use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
-use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
 use tokio::sync::RwLock;
 
 /// Default per-request timeout for all platform GraphQL calls. Without this,
@@ -53,22 +52,6 @@ pub async fn metadata_spec_version(network: Network, chain: Chain) -> Option<u32
         .await
         .get(&(network, chain))
         .map(|x| x.spec_version)
-}
-
-pub async fn metadata_names(
-    network: Network,
-    chain: Chain,
-    pallet_index: u8,
-    call_index: u8,
-) -> Option<(String, String)> {
-    METADATA
-        .read()
-        .await
-        .get(&(network, chain))?
-        .metadata
-        .extrinsic_call_info_by_index(pallet_index, call_index)
-        .ok()
-        .map(|x| (x.pallet_name.to_string(), x.call_name.to_string()))
 }
 
 pub async fn substrate_client(network: Network, chain: Chain) -> Option<SubstrateClient> {

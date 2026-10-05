@@ -186,11 +186,11 @@ pub struct ProcessorTick {
 }
 
 pub(crate) mod payload {
-    use crate::global;
-    use crate::types::{Chain, Network};
     use scale_encode::{EncodeAsFields, FieldIter, TypeResolver};
 
+    use subxt::Metadata;
     use subxt::error::EncodeError;
+    use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
     use subxt::transactions::Payload;
 
     pub type Bytes = Vec<u8>;
@@ -230,29 +230,20 @@ pub(crate) mod payload {
     }
 
     impl RawPayload {
-        pub async fn from_bytes(network: Network, chain: Chain, bytes: &[u8]) -> Option<Self> {
+        /// Name the call with `metadata`, which must be the metadata the payload is signed with.
+        pub fn from_bytes(metadata: &Metadata, bytes: &[u8]) -> Option<Self> {
             let pallet_index = bytes.first()?;
             let call_index = bytes.get(1)?;
-            let (pallet_name, call_name) = match global::metadata_names(
-                network,
-                chain,
-                *pallet_index,
-                *call_index,
-            )
-            .await
-            {
-                Some(x) => x,
-                None => {
-                    tracing::error!(
-                        "extrinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
-                    );
-                    return None;
-                }
+            let Ok(info) = metadata.extrinsic_call_info_by_index(*pallet_index, *call_index) else {
+                tracing::error!(
+                    "extrinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
+                );
+                return None;
             };
 
             Some(Self {
-                pallet_name,
-                call_name,
+                pallet_name: info.pallet_name.to_string(),
+                call_name: info.call_name.to_string(),
                 field_bytes: RawFields(bytes[2..].to_vec()),
             })
         }
@@ -1022,7 +1013,8 @@ impl TransactionProcessor {
                     tracing::error!("payload does not store pallet index and call index");
                     continue;
                 }
-                let payload = match RawPayload::from_bytes(network, chain, &payload).await {
+                let payload = match RawPayload::from_bytes(client_at_block.metadata_ref(), &payload)
+                {
                     Some(x) => x,
                     None => {
                         tracing::error!("generating raw payload failed");

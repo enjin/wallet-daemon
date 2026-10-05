@@ -1,7 +1,5 @@
 use crate::SubstrateClient;
 use clap::{Parser, Subcommand};
-use std::sync::Arc;
-use subxt::Metadata;
 
 #[derive(Parser, Debug)]
 pub struct Cli {
@@ -131,6 +129,5 @@ impl From<Network> for crate::graphql::get_account_nonce::Network {
 
 pub struct MetadataInfo {
     pub spec_version: u32,
-    pub metadata: Arc<Metadata>,
     pub client: SubstrateClient,
 }

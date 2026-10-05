@@ -32,6 +32,8 @@ mod multitenant;
 mod platform_client;
 mod retry;
 pub mod substrate_client;
+#[cfg(test)]
+mod test_fixtures;
 mod transaction;
 mod types;
 mod utils;

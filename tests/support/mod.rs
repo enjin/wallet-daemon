@@ -439,15 +439,17 @@ async fn handle(
             }
         }
         "SignTransactions" => {
-            let transactions: Vec<(String, String)> = variables
+            // Every uuid counts as signed, as before; a missing extrinsic just leaves
+            // `signed_extrinsic` empty for the test to notice.
+            let transactions: Vec<(String, Option<String>)> = variables
                 .get("transactions")
                 .and_then(Value::as_array)
                 .map(|txs| {
                     txs.iter()
                         .filter_map(|tx| {
                             let uuid = tx.get("uuid")?.as_str()?;
-                            let extrinsic = tx.get("signedExtrinsic")?.as_str()?;
-                            Some((uuid.to_string(), extrinsic.to_string()))
+                            let extrinsic = tx.get("signedExtrinsic").and_then(Value::as_str);
+                            Some((uuid.to_string(), extrinsic.map(str::to_string)))
                         })
                         .collect()
                 })
@@ -460,7 +462,9 @@ async fn handle(
                     let mut extrinsics = state.signed_extrinsics.lock().unwrap();
                     for (uuid, extrinsic) in transactions {
                         signed.push(uuid.clone());
-                        extrinsics.insert(uuid, extrinsic);
+                        if let Some(extrinsic) = extrinsic {
+                            extrinsics.insert(uuid, extrinsic);
+                        }
                     }
                     state.nonce.fetch_add(count, Ordering::SeqCst);
                     (200, json!({ "result": true }))

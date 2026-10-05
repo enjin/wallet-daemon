@@ -51,7 +51,7 @@ pub async fn update_metadata_and_substrate_client(
     let genesis_hash = get_genesis_hash(network, chain);
     let config = SubstrateConfig::builder()
         .set_spec_version_for_block_ranges(ranges)
-        .set_metadata_for_spec_versions([(spec_version, metadata.clone())])
+        .set_metadata_for_spec_versions([(spec_version, metadata)])
         .set_genesis_hash(genesis_hash)
         .build();
     let config = EnjinConfig {
@@ -65,7 +65,6 @@ pub async fn update_metadata_and_substrate_client(
         chain,
         MetadataInfo {
             spec_version: info.spec_version as u32,
-            metadata: metadata.clone(),
             client,
         },
     )
