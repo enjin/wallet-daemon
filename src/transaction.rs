@@ -2,12 +2,10 @@ mod fuel_tank;
 
 use crate::graphql::sign_transactions::SignTransactionInput;
 use crate::graphql::{GetPendingTransactions, get_pending_transactions};
-use crate::transaction::fuel_tank::ExpirableSignature;
 use crate::transaction::payload::RawFields;
 use crate::types::{Chain, Network};
 use crate::work_trigger::{PusherAwarePoller, PusherStatus, WorkTrigger};
 use crate::{DUMMY_TX_MORTALITY, TX_MORTALITY, chain_info, global, platform_client, utils};
-use parity_scale_codec::Encode;
 use payload::RawPayload;
 use std::collections::{HashMap, HashSet};
 use subxt::config::DefaultExtrinsicParamsBuilder;
@@ -188,11 +186,11 @@ pub struct ProcessorTick {
 }
 
 pub(crate) mod payload {
-    use crate::global;
-    use crate::types::{Chain, Network};
     use scale_encode::{EncodeAsFields, FieldIter, TypeResolver};
 
+    use subxt::Metadata;
     use subxt::error::EncodeError;
+    use subxt::ext::frame_decode::extrinsics::ExtrinsicTypeInfo;
     use subxt::transactions::Payload;
 
     pub type Bytes = Vec<u8>;
@@ -232,29 +230,20 @@ pub(crate) mod payload {
     }
 
     impl RawPayload {
-        pub async fn from_bytes(network: Network, chain: Chain, bytes: &[u8]) -> Option<Self> {
+        /// Name the call with `metadata`, which must be the metadata the payload is signed with.
+        pub fn from_bytes(metadata: &Metadata, bytes: &[u8]) -> Option<Self> {
             let pallet_index = bytes.first()?;
             let call_index = bytes.get(1)?;
-            let (pallet_name, call_name) = match global::metadata_names(
-                network,
-                chain,
-                *pallet_index,
-                *call_index,
-            )
-            .await
-            {
-                Some(x) => x,
-                None => {
-                    tracing::error!(
-                        "extrinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
-                    );
-                    return None;
-                }
+            let Ok(info) = metadata.extrinsic_call_info_by_index(*pallet_index, *call_index) else {
+                tracing::error!(
+                    "extrinsic at pallet index: {pallet_index}, call_index: {call_index}, not found"
+                );
+                return None;
             };
 
             Some(Self {
-                pallet_name,
-                call_name,
+                pallet_name: info.pallet_name.to_string(),
+                call_name: info.call_name.to_string(),
                 field_bytes: RawFields(bytes[2..].to_vec()),
             })
         }
@@ -938,6 +927,21 @@ impl TransactionProcessor {
                 continue;
             };
 
+            // One client for every step below, so the fuel tank call is laid out with the same
+            // metadata that both extrinsics are signed with.
+            let Some(chain_client) = global::substrate_client(network, chain).await else {
+                tracing::error!(
+                    "Missing substrate client for network {network:?}, chain {chain:?}"
+                );
+                continue;
+            };
+            let Ok(client_at_block) = chain_client.at_block(block_number) else {
+                tracing::error!(
+                    "Client metadata or spec_version missing for network {network:?}, chain {chain:?}"
+                );
+                continue;
+            };
+
             let Some(nonce_slot) = nonces.get_mut(&nonce_key) else {
                 tracing::error!(
                     "missing pre-fetched nonce for {} on {network:?}/{chain:?}",
@@ -951,40 +955,27 @@ impl TransactionProcessor {
                 // expiration block is needed for the signature
                 let expiration_block = block_number + TX_MORTALITY as u32;
 
-                // remove the last byte of the payload because it is the settings param, and we are
-                // replacing it
-                payload.pop();
-
-                // create message to be signed
-                let Ok(message) =
-                    fuel_tank::create_message(&payload, signer.public_key().0, expiration_block)
-                else {
-                    continue;
-                };
-
-                // sign by the fuel tank external id if it exists
                 let ft_signer = derive_signer(&keypair, fuel_tank_signer_external_id.as_deref());
-                let signature = sp_core::sr25519::Signature::from_raw(ft_signer.sign(&message).0);
-                tracing::info!(
-                    "fuel tanks - signed message {} with {} and got signature {}",
-                    hex::encode(&message),
-                    hex::encode(ft_signer.public_key().0),
-                    hex::encode(signature)
-                );
-
-                let settings = fuel_tank::DispatchSettings {
-                    signature: Some(ExpirableSignature {
-                        signature,
-                        expiry_block: expiration_block,
-                    }),
-                    ..Default::default()
+                tracing::debug!("payload before fuel tank: {}", hex::encode(&payload));
+                payload = match fuel_tank::sign_dispatch(
+                    &payload,
+                    client_at_block.metadata_ref(),
+                    pubkey_bytes,
+                    expiration_block,
+                    |message| ft_signer.sign(message).0,
+                ) {
+                    Ok(payload) => payload,
+                    Err(e) => {
+                        tracing::error!("Failed to sign fuel tank for request #{request_id}: {e}");
+                        continue;
+                    }
                 };
-
-                tracing::info!("payload before fuel tank: {}", hex::encode(&payload));
-
-                // append to the payload. This is fine because settings is the last param of the extrinsic
-                payload.extend_from_slice(&Some(settings).encode());
-                tracing::info!("fuel tank modified payload: {}", hex::encode(&payload));
+                tracing::info!(
+                    "Signed fuel tank dispatch #{request_id} with fuel tank signer 0x{} for caller 0x{}, expiring at block {expiration_block}",
+                    hex::encode(ft_signer.public_key().0),
+                    hex::encode(pubkey_bytes),
+                );
+                tracing::debug!("fuel tank modified payload: {}", hex::encode(&payload));
             }
 
             let dummy_tx = {
@@ -998,13 +989,6 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal_from_unchecked(DUMMY_TX_MORTALITY, block_number.into(), block_hash)
                     .build();
-                let Some(chain_client) = global::substrate_client(network, chain).await else {
-                    tracing::error!(
-                        "Missing substrate client for network {network:?}, chain {chain:?}"
-                    );
-                    continue;
-                };
-                let client_at_block = chain_client.at_block(block_number).unwrap();
                 let signed_dummy_tx = match client_at_block
                     .tx()
                     .create_signable_offline(&payload, params)
@@ -1029,7 +1013,8 @@ impl TransactionProcessor {
                     tracing::error!("payload does not store pallet index and call index");
                     continue;
                 }
-                let payload = match RawPayload::from_bytes(network, chain, &payload).await {
+                let payload = match RawPayload::from_bytes(client_at_block.metadata_ref(), &payload)
+                {
                     Some(x) => x,
                     None => {
                         tracing::error!("generating raw payload failed");
@@ -1042,19 +1027,6 @@ impl TransactionProcessor {
                     .nonce(correct_nonce)
                     .mortal_from_unchecked(TX_MORTALITY, block_number.into(), block_hash)
                     .build();
-                let Some(chain_client) = global::substrate_client(network, chain).await else {
-                    tracing::error!(
-                        "Missing substrate client for network {network:?}, chain {chain:?}"
-                    );
-                    continue;
-                };
-                let Ok(client_at_block) = chain_client.at_block(block_number) else {
-                    tracing::error!(
-                        "Client metadata or spec_version missing for network {network:?}, chain {chain:?}"
-                    );
-                    continue;
-                };
-
                 match client_at_block
                     .tx()
                     .create_signable_offline(&payload, params)
