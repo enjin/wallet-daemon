@@ -286,7 +286,8 @@ mod tests {
     // System.remark with settings-looking bytes inside its arguments.
     const REMARK: &[u8] = &hex!("00001001000001");
 
-    // Upgrade fixtures captured from finalized blocks on 2026-10-05:
+    // Upgrade fixtures captured from finalized blocks on 2026-10-05, as metadata V16 like the
+    // Platform fetches it:
     // canary-matrixchain, spec 1041:
     // 0x2dcde497d568733a453905ac647ddd390c56634326783892217897d2d9246d37
     // canary-relaychain, spec 1080:

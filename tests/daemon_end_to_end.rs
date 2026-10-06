@@ -11,8 +11,9 @@ use std::time::Duration;
 use subxt::ext::frame_decode::extrinsics::decode_extrinsic;
 use subxt_signer::sr25519;
 use support::{
-    CURRENT_BLOCK, Daemon, FUEL_TANK_INNER_CALL, MockPlatform, PendingTx, PopulateBehaviour,
-    SignBehaviour,
+    CANARY_MATRIX_1031, CANARY_MATRIX_1041, CURRENT_BLOCK, Daemon, FUEL_TANK_INNER_CALL,
+    FUEL_TANK_PAYLOAD_1031, FUEL_TANK_PAYLOAD_1041, MockPlatform, PendingTx, PopulateBehaviour,
+    Runtime, SignBehaviour,
 };
 
 /// Generous, because a cold `cargo test` may still be linking the binary.
@@ -55,15 +56,30 @@ fn managed_wallet(root: [u8; 32], external_id: i64) -> [u8; 32] {
 
 #[tokio::test]
 async fn a_fuel_tank_dispatch_is_signed_for_its_caller_by_the_fuel_tank_wallet() {
+    assert_fuel_tank_dispatch_signed(CANARY_MATRIX_1031, FUEL_TANK_PAYLOAD_1031, &[]).await;
+}
+
+#[tokio::test]
+async fn a_fuel_tank_dispatch_on_matrixchain_1041_keeps_the_settings_it_was_sent() {
+    // The layout that made the rule set optional and added `create_account`
+    // after the signature, with `create_account` set as in the payload
+    // reported from canary.
+    assert_fuel_tank_dispatch_signed(CANARY_MATRIX_1041, FUEL_TANK_PAYLOAD_1041, &[1]).await;
+}
+
+/// Have the daemon on `runtime` sign `payload`, a fuel tank dispatch by
+/// wallet 42 with a fuel tank signature from wallet 7, and check what it
+/// submits. The settings must end with `after_signature`, as sent.
+async fn assert_fuel_tank_dispatch_signed(runtime: Runtime, payload: &str, after_signature: &[u8]) {
     // A fuel tank's RequireSignature rule checks a signature over the inner
     // call, the account dispatching it and an expiry block. The dispatching
     // account is the wallet signing the extrinsic, the signature comes from
     // another wallet, and both are derived from the daemon's key; so this
     // pins down which key plays which role.
-    let platform = MockPlatform::start().await;
+    let platform = MockPlatform::start_with(runtime).await;
     platform.set_tx_page(
         None,
-        vec![PendingTx::fuel_tank("ft-1", "42", Some("7"))],
+        vec![PendingTx::fuel_tank("ft-1", payload, "42", Some("7"))],
         None,
     );
 
@@ -79,7 +95,7 @@ async fn a_fuel_tank_dispatch_is_signed_for_its_caller_by_the_fuel_tank_wallet()
     let fuel_tank_wallet = managed_wallet(root, 7);
     let extrinsic = platform.signed_extrinsic("ft-1").unwrap();
     let extrinsic = hex::decode(extrinsic.trim_start_matches("0x")).unwrap();
-    let metadata = support::metadata();
+    let metadata = platform.metadata();
     let decoded = decode_extrinsic(&mut &extrinsic[..], &metadata, metadata.types())
         .unwrap_or_else(|e| {
             panic!(
@@ -97,16 +113,35 @@ async fn a_fuel_tank_dispatch_is_signed_for_its_caller_by_the_fuel_tank_wallet()
     );
     let argument = |name: &str| {
         let argument = decoded.call_data().find(|a| a.name() == name).unwrap();
-        &extrinsic[argument.range()]
+        argument.range()
     };
-    assert_eq!(argument("call"), FUEL_TANK_INNER_CALL);
+    assert_eq!(&extrinsic[argument("call")], FUEL_TANK_INNER_CALL);
 
-    // Some(settings) { use_none_origin, pays_remaining_fee, Some(signature) { .., expiry } }
+    // Some(settings) { use_none_origin, pays_remaining_fee, Some(signature) { .., expiry }, .. }
     let settings = argument("settings");
-    assert_eq!(settings.len(), 72, "settings: {}", hex::encode(settings));
+    // `decode_extrinsic` accepts bytes after the last argument, which is where
+    // a signature appended to the wrong layout ends up.
+    assert_eq!(
+        settings.end,
+        extrinsic.len(),
+        "nothing may follow the settings: {}",
+        hex::encode(&extrinsic[settings.end..])
+    );
+    let settings = &extrinsic[settings];
+    assert_eq!(
+        settings.len(),
+        72 + after_signature.len(),
+        "settings: {}",
+        hex::encode(settings)
+    );
     assert_eq!(settings[..4], [1, 0, 0, 1]);
     let signature = sr25519::Signature(settings[4..68].try_into().unwrap());
-    let expiry = u32::from_le_bytes(settings[68..].try_into().unwrap());
+    let expiry = u32::from_le_bytes(settings[68..72].try_into().unwrap());
+    assert_eq!(
+        &settings[72..],
+        after_signature,
+        "the settings after the signature must be kept as sent"
+    );
     assert_eq!(
         expiry,
         CURRENT_BLOCK + 64,

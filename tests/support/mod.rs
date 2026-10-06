@@ -34,20 +34,70 @@ pub const REMARK_PAYLOAD: &str = "0x000000";
 /// A payload whose pallet/call indices do not exist in the metadata, so
 /// `RawPayload::from_bytes` fails and the request is skipped every time.
 pub const POISON_PAYLOAD: &str = "0xfefe00";
-/// `FuelTanks.dispatch` in the bundled canary metadata (pallet 54, call 5):
-/// tank `MultiAddress::Id(0x09..)`, rule set 1, `FUEL_TANK_INNER_CALL`, and
-/// no settings, which the daemon replaces with a signature.
-pub const FUEL_TANK_PAYLOAD: &str = concat!(
+/// `FuelTanks.dispatch` as `CANARY_MATRIX_1031` lays it out (pallet 54,
+/// call 5): tank `MultiAddress::Id(0x09..)`, rule set 1,
+/// `FUEL_TANK_INNER_CALL`, and no settings, which the daemon replaces with a
+/// signature.
+pub const FUEL_TANK_PAYLOAD_1031: &str = concat!(
     "0x360500",
     "0909090909090909090909090909090909090909090909090909090909090909",
     "01000000",
     "0000042a",
     "00",
 );
-/// The call inside `FUEL_TANK_PAYLOAD`: `System.remark(0x2a)`.
+/// The same dispatch as `CANARY_MATRIX_1041` lays it out, where the rule set
+/// is optional (here `Some(1)`), with settings that set only `create_account`,
+/// which follows the signature in this layout.
+pub const FUEL_TANK_PAYLOAD_1041: &str = concat!(
+    "0x360500",
+    "0909090909090909090909090909090909090909090909090909090909090909",
+    "0101000000",
+    "0000042a",
+    // Some: use_none_origin, pays_remaining_fee, no signature, create_account
+    "0100000001",
+);
+/// The call inside both fuel tank payloads: `System.remark(0x2a)`.
 pub const FUEL_TANK_INNER_CALL: [u8; 4] = [0, 0, 4, 0x2a];
 /// The block the mock reports as current.
 pub const CURRENT_BLOCK: u32 = 1_000_000;
+
+/// A runtime the mock can serve: its metadata fixture, and the versions the
+/// Platform reports with it, as in the fixture's `System.Version` constant.
+/// Each fixture is what the Platform fetches,
+/// `Metadata_metadata_at_version(16)`, at a block on that runtime.
+#[derive(Clone, Copy)]
+pub struct Runtime {
+    fixture: &'static str,
+    spec_version: u32,
+    transaction_version: u32,
+}
+
+/// Canary Matrixchain 1031, the runtime `MockPlatform::start` serves, from
+/// block 0x0cc796129255effb1e4215efb7b774b901ca9731ca25a64d1e87add74f5a8f95.
+pub const CANARY_MATRIX_1031: Runtime = Runtime {
+    fixture: "canary_matrix_metadata.scale",
+    spec_version: 1031,
+    transaction_version: 12,
+};
+/// Canary Matrixchain 1041, with the fuel tank layout Matrixchain 1040
+/// introduced, from block
+/// 0x2dcde497d568733a453905ac647ddd390c56634326783892217897d2d9246d37.
+pub const CANARY_MATRIX_1041: Runtime = Runtime {
+    fixture: "canary_matrix_1041_metadata.scale",
+    spec_version: 1041,
+    transaction_version: 14,
+};
+
+impl Runtime {
+    fn metadata_bytes(&self) -> Vec<u8> {
+        let path = format!(
+            "{}/tests/fixtures/{}",
+            env!("CARGO_MANIFEST_DIR"),
+            self.fixture
+        );
+        std::fs::read(&path).expect("metadata fixture missing")
+    }
+}
 
 /// One pending transaction the mock will hand out.
 #[derive(Clone)]
@@ -79,14 +129,19 @@ impl PendingTx {
         Self::with_payload(uuid, "not-a-payload")
     }
 
-    /// A `FuelTanks.dispatch` that managed wallet `wallet` dispatches, with a
-    /// fuel tank signature from managed wallet `fuel_tank_signer` (`None` for
-    /// the daemon's own wallet).
-    pub fn fuel_tank(uuid: &str, wallet: &str, fuel_tank_signer: Option<&str>) -> Self {
+    /// The `FuelTanks.dispatch` `payload`, which managed wallet `wallet`
+    /// dispatches, with a fuel tank signature from managed wallet
+    /// `fuel_tank_signer` (`None` for the daemon's own wallet).
+    pub fn fuel_tank(
+        uuid: &str,
+        payload: &str,
+        wallet: &str,
+        fuel_tank_signer: Option<&str>,
+    ) -> Self {
         Self {
             wallet_external_id: Some(wallet.to_string()),
             fuel_tank_signer_external_id: Some(fuel_tank_signer.map(str::to_string)),
-            ..Self::with_payload(uuid, FUEL_TANK_PAYLOAD)
+            ..Self::with_payload(uuid, payload)
         }
     }
 
@@ -151,6 +206,8 @@ pub struct MockPlatform {
 }
 
 struct State {
+    runtime: Runtime,
+    metadata_version: u8,
     metadata_hex: String,
     started: Instant,
     calls: Mutex<Vec<Call>>,
@@ -170,10 +227,20 @@ struct State {
 
 impl MockPlatform {
     pub async fn start() -> Self {
+        Self::start_with(CANARY_MATRIX_1031).await
+    }
+
+    /// Start a mock that serves `runtime`.
+    pub async fn start_with(runtime: Runtime) -> Self {
+        let metadata = runtime.metadata_bytes();
+        // `RuntimeMetadataPrefixed`: the magic "meta", then the version.
+        let metadata_version = metadata[4];
         // The daemon decodes this field as `Option<Vec<u8>>`, so wrap it.
-        let metadata_hex = format!("0x{}", hex::encode(Some(metadata_bytes()).encode()));
+        let metadata_hex = format!("0x{}", hex::encode(Some(metadata).encode()));
 
         let state = Arc::new(State {
+            runtime,
+            metadata_version,
             metadata_hex,
             started: Instant::now(),
             calls: Mutex::new(Vec::new()),
@@ -270,6 +337,11 @@ impl MockPlatform {
             .cloned()
     }
 
+    /// The metadata the mock serves, for decoding what the daemon submits.
+    pub fn metadata(&self) -> subxt::Metadata {
+        subxt::Metadata::decode_from(&self.state.runtime.metadata_bytes()).expect("decode metadata")
+    }
+
     /// The daemon's own public key, as it registered it on startup.
     pub fn daemon_public_key(&self) -> Option<[u8; 32]> {
         let call = self.calls_to("SetDaemonWalletAccount").into_iter().next()?;
@@ -316,19 +388,6 @@ impl MockPlatform {
     }
 }
 
-fn metadata_bytes() -> Vec<u8> {
-    let path = format!(
-        "{}/tests/fixtures/canary_matrix_metadata.scale",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(&path).expect("metadata fixture missing")
-}
-
-/// The metadata the mock serves, for decoding what the daemon submits.
-pub fn metadata() -> subxt::Metadata {
-    subxt::Metadata::decode_from(&metadata_bytes()).expect("decode metadata")
-}
-
 fn summarise(calls: &[Call]) -> String {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for call in calls {
@@ -371,9 +430,9 @@ async fn handle(
                 "result": {
                     "currentBlockNumber": CURRENT_BLOCK,
                     "currentBlockHash": format!("0x{}", "11".repeat(32)),
-                    "specVersion": 1031,
-                    "transactionVersion": 12,
-                    "metadataVersion": 15,
+                    "specVersion": state.runtime.spec_version,
+                    "transactionVersion": state.runtime.transaction_version,
+                    "metadataVersion": state.metadata_version,
                     "metadata": state.metadata_hex,
                 }
             }),
