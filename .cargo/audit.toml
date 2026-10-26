@@ -1,0 +1,11 @@
+# Ignored RustSec advisories, reviewed 2026-10-25 (PLA-2642). Re-check when subxt/sp-core are upgraded.
+[advisories]
+ignore = [
+    # crypto-bigint 0.5 timing variability. Pulled by sp-core -> k256 0.13 -> elliptic-curve 0.13; the fix
+    # (crypto-bigint 0.7) needs k256/elliptic-curve 0.14, which no released sp-core uses yet. The daemon signs
+    # with sr25519 only, so no secret-dependent k256 arithmetic runs here.
+    "RUSTSEC-2026-0387",
+    # ruzstd 0.8 decompression bomb (DoS). Only reachable through subxt's optional light-client dependency
+    # smoldot, which is not enabled (features = ["native"]); the crate is in Cargo.lock but never compiled.
+    "RUSTSEC-2026-0344",
+]
