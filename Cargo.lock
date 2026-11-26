@@ -684,6 +684,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bip39"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4559bb9225f8401dcea601cf8dc9ed81ea0dadd9cf7755fdefdd93ef7961e19e"
+dependencies = [
+ "bitcoin_hashes",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "serde",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "bitcoin-io"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4122,7 +4135,7 @@ dependencies = [
  "async-lock",
  "atomic-take",
  "base64",
- "bip39",
+ "bip39 2.2.2",
  "blake2-rfc",
  "bs58",
  "chacha20 0.9.1",
@@ -4235,7 +4248,7 @@ checksum = "9182532d34684ad8852e7c5036469da9db38f318bc5ba70bb5e1e119d6154fc7"
 dependencies = [
  "ark-vrf",
  "array-bytes",
- "bip39",
+ "bip39 2.2.2",
  "bitflags 1.3.2",
  "blake2",
  "bounded-collections",
@@ -4535,7 +4548,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6a5e6417a22233f9731cd8a151a5c3d407c65b0199da0f799cf0ed1c753693a"
 dependencies = [
  "base64",
- "bip39",
+ "bip39 2.2.2",
  "cfg-if",
  "crypto_secretbox",
  "hex",
@@ -5192,7 +5205,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "backon",
- "bip39",
+ "bip39 3.0.0",
  "clap",
  "dotenvy",
  "futures-util",

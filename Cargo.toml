@@ -41,7 +41,7 @@ scale-encode = "0.10"
 hex = "0.4.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 sp-core = { version = "*", default-features = false, features = ["std"] } # match the version subxt uses
-bip39 = { version = "2.2.0", features = ["rand"] }
+bip39 = { version = "3.0.0", features = ["rand"] }
 hex-literal = "1.1.0"
 scale-info-legacy = "0.4.2"
 aes-gcm = "0.10.3"
