@@ -106,7 +106,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -117,7 +117,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1498,7 +1498,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1587,23 +1587,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "frame-decode"
-version = "0.17.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88cda60c640572c970c544ba5879375a18ecfb2c47c617be8265830b63df193d"
-dependencies = [
- "frame-metadata",
- "parity-scale-codec",
- "scale-decode",
- "scale-encode",
- "scale-info",
- "scale-info-legacy",
- "scale-type-resolver",
- "sp-crypto-hashing",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2812,7 +2795,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3485,7 +3468,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3565,7 +3548,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs 1.0.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4226,7 +4209,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4425,7 +4408,7 @@ dependencies = [
  "async-trait",
  "derive-where",
  "either",
- "frame-decode 0.18.2",
+ "frame-decode",
  "frame-metadata",
  "futures",
  "hex",
@@ -4457,9 +4440,9 @@ dependencies = [
 
 [[package]]
 name = "subxt-codegen"
-version = "0.50.0"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cc64ea7c2cb00c991907b4e492f8278525abad39dc718541672c7ae057dd260"
+checksum = "a1937c78c115792976ccc1715bb3188d408538c77c1042adfbc7f718c0df3f51"
 dependencies = [
  "heck",
  "parity-scale-codec",
@@ -4491,9 +4474,9 @@ dependencies = [
 
 [[package]]
 name = "subxt-macro"
-version = "0.50.0"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "585c2aa051ad10633aeb8e68b02b7fbd639ce7d58f27058622c9c031a2b2cc89"
+checksum = "201ba29c4ad3cb5b387844bcc50f41467bc9f6f6c28aab1e4648b2c944cac762"
 dependencies = [
  "darling",
  "parity-scale-codec",
@@ -4508,11 +4491,11 @@ dependencies = [
 
 [[package]]
 name = "subxt-metadata"
-version = "0.50.0"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "364cd732cdc47381240e4756c47a345009f2bf299754d4b3b07ce261d95d3005"
+checksum = "359dd3c5fd2dc4ec70411e7e0bb5ebd4c529acbafc2c932030e3181672b1149f"
 dependencies = [
- "frame-decode 0.17.2",
+ "frame-decode",
  "frame-metadata",
  "hashbrown 0.14.5",
  "parity-scale-codec",
@@ -4525,9 +4508,9 @@ dependencies = [
 
 [[package]]
 name = "subxt-rpcs"
-version = "0.50.0"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5929c336747a2f98ad0bcef571529faadcb3e349d4ef12bb7999174840ac957f"
+checksum = "ae25b936ce2002aeaf42b8a8c7e3bb8f20dfd9213fec33971163239097bd1d47"
 dependencies = [
  "derive-where",
  "frame-metadata",
@@ -4575,9 +4558,9 @@ dependencies = [
 
 [[package]]
 name = "subxt-utils-accountid32"
-version = "0.50.0"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e03d4e3bbcf88379985dc6d2a5718d58ddaa09f3d40f21ef7d8749c62b70d44"
+checksum = "886f4cf8b1e91d0368616b7cf8a4e257e40c1f1981b6550076e267cb51ada57c"
 dependencies = [
  "base58",
  "blake2",
@@ -4591,9 +4574,9 @@ dependencies = [
 
 [[package]]
 name = "subxt-utils-fetchmetadata"
-version = "0.50.0"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ccff94b31e98f551e35ddf20397d6ba55ab69dfd12edda0037b428fc8f99c65"
+checksum = "4102022bea2bf2e9f6eb44f503968819506c53c53fac019943340a6cc2faf1ef"
 dependencies = [
  "hex",
  "parity-scale-codec",
@@ -4679,7 +4662,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5474,7 +5457,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
